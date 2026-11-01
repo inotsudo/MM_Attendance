@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
 import { formatKigaliDateTime } from './dataset'
+import { reportDayStatus } from './day-status'
 import type { AttendanceReport, ReportDayCell } from './types'
 
 const navy = '27345B'
@@ -41,15 +42,18 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
   workbook.modified = new Date(report.metadata.generatedAt)
 
   const weekly = workbook.addWorksheet('Weekly Attendance', { views: [{ state: 'frozen', ySplit: 7, xSplit: 3 }] })
-  const summaryColumns = ['Calculated days', 'Evidence days', 'Late days', 'Very late days', 'Verified OT days', 'Incomplete days', 'No source record days', 'Review items']
-  const lastColumn = 3 + report.dates.length * 2 + summaryColumns.length
+  const summaryColumns = ['Calculated days', 'Evidence days', 'Late days', 'Very late days', 'Verified OT days', 'Incomplete days', 'No source record days', 'Absences (not assessed)', 'Review items']
+  const dailyColumns = 3
+  const dailyStart = 4
+  const summaryStart = dailyStart + report.dates.length * dailyColumns
+  const lastColumn = summaryStart - 1 + summaryColumns.length
   weekly.mergeCells(1, 1, 1, lastColumn)
   weekly.getCell(1, 1).value = 'MM&RJD | Weekly Employee Attendance Report'
   weekly.getCell(1, 1).font = { name: 'Aptos Display', size: 18, bold: true, color: { argb: 'FFFFFF' } }
   weekly.getCell(1, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
   weekly.getCell(1, 1).alignment = { vertical: 'middle' }
   weekly.getRow(1).height = 34
-  for (const [row, text] of [[2, `Reporting period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`], [3, `Generated: ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}) | UTC: ${report.metadata.generatedAt}`], [4, `Employees: ${report.summary.employeesIncluded} | Calculated days: ${report.summary.attendanceDaysCalculated} | Late: ${report.summary.lateDays} | Very late: ${report.summary.veryLateDays} | Verified overtime: ${report.summary.verifiedOvertimeDays} | Review exceptions: ${report.summary.reviewExceptions}`], [5, '“No records” means no imported source evidence was found. It is not a verified absence. PDF fingerprint events are not assigned IN/OUT direction.']] as const) {
+  for (const [row, text] of [[2, `Reporting period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`], [3, `Generated: ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}) | UTC: ${report.metadata.generatedAt}`], [4, `Employees: ${report.summary.employeesIncluded} | Calculated days: ${report.summary.attendanceDaysCalculated} | No source record days: ${report.summary.noSourceRecordDays} | Late: ${report.summary.lateDays} | Very late: ${report.summary.veryLateDays} | Verified overtime: ${report.summary.verifiedOvertimeDays} | Incomplete: ${report.summary.incompleteDays} | Review exceptions: ${report.summary.reviewExceptions}`], [5, 'No source records are not verified absences. Absence totals are not assessed because no work calendar is configured. PDF fingerprint events are not assigned IN/OUT direction.']] as const) {
     weekly.mergeCells(row, 1, row, lastColumn)
     weekly.getCell(row, 1).value = text
     weekly.getCell(row, 1).font = { name: 'Aptos', size: row === 5 ? 9 : 10, italic: row === 5, color: { argb: row === 5 ? '8A5A22' : '43415A' } }
@@ -59,20 +63,20 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
   weekly.mergeCells('A6:A7'); weekly.mergeCells('B6:B7'); weekly.mergeCells('C6:C7')
   weekly.getCell('A6').value = 'Employee ID'; weekly.getCell('B6').value = 'Employee name'; weekly.getCell('C6').value = 'Department'
   report.dates.forEach((date, index) => {
-    const start = 4 + index * 2
-    weekly.mergeCells(6, start, 6, start + 1)
+    const start = dailyStart + index * dailyColumns
+    weekly.mergeCells(6, start, 6, start + 2)
     weekly.getCell(6, start).value = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00Z`))
-    weekly.getCell(7, start).value = 'IN'; weekly.getCell(7, start + 1).value = 'OUT'
+    weekly.getCell(7, start).value = 'IN'; weekly.getCell(7, start + 1).value = 'OUT'; weekly.getCell(7, start + 2).value = 'Daily status'
   })
   summaryColumns.forEach((label, index) => {
-    const column = 4 + report.dates.length * 2 + index
+    const column = summaryStart + index
     weekly.getCell(7, column).value = label
   })
   styleHeader(weekly.getRow(6)); styleHeader(weekly.getRow(7))
   weekly.getRow(6).height = 27; weekly.getRow(7).height = 22
   weekly.columns = [
     { width: 15 }, { width: 24 }, { width: 18 },
-    ...report.dates.flatMap(() => [{ width: 12 }, { width: 12 }]),
+    ...report.dates.flatMap(() => [{ width: 12 }, { width: 12 }, { width: 25 }]),
     ...summaryColumns.map(() => ({ width: 15 })),
   ]
   for (const employee of report.employees) {
@@ -80,25 +84,25 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
     for (const day of employee.days) {
       const inValue = day.sourceInValues.join('\n') || (day.kind === 'calculated' ? day.inTimes.join('\n') : '')
       const outValue = day.sourceOutValues.join('\n') || (day.kind === 'calculated' ? day.outTimes.join('\n') : '')
-      values.push(inValue, outValue)
+      values.push(inValue, outValue, reportDayStatus(day))
     }
-    values.push(employee.totals.calculatedDays, employee.totals.evidenceDays, employee.totals.lateDays, employee.totals.veryLateDays, employee.totals.overtimeDays, employee.totals.incompleteDays, employee.totals.noSourceRecordDays, employee.totals.reviewExceptions)
+    values.push(employee.totals.calculatedDays, employee.totals.evidenceDays, employee.totals.lateDays, employee.totals.veryLateDays, employee.totals.overtimeDays, employee.totals.incompleteDays, employee.totals.noSourceRecordDays, 'Not assessed', employee.totals.reviewExceptions)
     const row = weekly.addRow(values)
     row.height = 63
     row.eachCell((cell, column) => {
       cell.font = { name: 'Aptos', size: 9, color: { argb: '343243' } }
-      cell.alignment = { vertical: 'middle', horizontal: column >= 4 && column < 4 + report.dates.length * 2 ? 'center' : 'left', wrapText: true }
+      cell.alignment = { vertical: 'middle', horizontal: column >= dailyStart && column < summaryStart ? 'center' : 'left', wrapText: true }
       cell.border = { bottom: { style: 'hair', color: { argb: border } } }
-      if (column >= 4 && column < 4 + report.dates.length * 2) {
-        const day = employee.days[Math.floor((column - 4) / 2)]
+      if (column >= dailyStart && column < summaryStart) {
+        const day = employee.days[Math.floor((column - dailyStart) / dailyColumns)]
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dayFill(day) } }
       } else if (column <= 3) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FAF9FC' } }
     })
   }
   const finalWeeklyRow = Math.max(8, weekly.rowCount)
   if (report.employees.length) weekly.addConditionalFormatting({
-    ref: `${weekly.getColumn(4 + report.dates.length * 2).letter}8:${weekly.getColumn(lastColumn).letter}${finalWeeklyRow}`,
-    rules: [{ type: 'expression', formulae: [`AND(ISNUMBER(${weekly.getColumn(4 + report.dates.length * 2).letter}8),${weekly.getColumn(4 + report.dates.length * 2).letter}8>0)`], priority: 1, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4D6' } }, font: { color: { argb: '8A6414' }, bold: true } } }],
+    ref: `${weekly.getColumn(summaryStart).letter}8:${weekly.getColumn(lastColumn).letter}${finalWeeklyRow}`,
+    rules: [{ type: 'expression', formulae: [`AND(ISNUMBER(${weekly.getColumn(summaryStart).letter}8),${weekly.getColumn(summaryStart).letter}8>0)`], priority: 1, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4D6' } }, font: { color: { argb: '8A6414' }, bold: true } } }],
   })
   if (!report.employees.length) {
     const row = weekly.addRow(['No active employees were present in the roster at report generation time.'])
@@ -106,21 +110,23 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
   }
   if (report.employees.length) weekly.autoFilter = { from: 'A7', to: `${weekly.getColumn(lastColumn).letter}${weekly.rowCount}` }
   setPrintLayout(weekly, '1:7')
+  weekly.pageSetup.fitToWidth = 2
+  weekly.pageSetup.printTitlesColumn = 'A:C'
 
   const summary = workbook.addWorksheet('Attendance Summary')
   summary.addRow(['MM&RJD | Attendance Summary'])
-  summary.mergeCells('A1:K1')
+  summary.mergeCells('A1:L1')
   summary.getCell('A1').font = { name: 'Aptos Display', size: 16, bold: true, color: { argb: 'FFFFFF' } }
   summary.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
   summary.addRow([`Period ${report.metadata.periodStart} to ${report.metadata.periodEnd} | Generated ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}) | UTC ${report.metadata.generatedAt}`])
-  summary.mergeCells('A2:K2')
-  summary.addRow(['Employee ID', 'Employee name', 'Department', 'Calculated days', 'Days with evidence', 'Late days', 'Very late days', 'Verified overtime days', 'Incomplete days', 'No source record days', 'Review exceptions'])
+  summary.mergeCells('A2:L2')
+  summary.addRow(['Employee ID', 'Employee name', 'Department', 'Calculated days', 'Days with evidence', 'Late days', 'Very late days', 'Verified overtime days', 'Incomplete days', 'No source record days', 'Absences (not assessed)', 'Review exceptions'])
   styleHeader(summary.getRow(3))
-  for (const row of report.employees) summary.addRow([row.employee.employeeNumber, row.employee.fullName, row.employee.department ?? '—', row.totals.calculatedDays, row.totals.evidenceDays, row.totals.lateDays, row.totals.veryLateDays, row.totals.overtimeDays, row.totals.incompleteDays, row.totals.noSourceRecordDays, row.totals.reviewExceptions])
+  for (const row of report.employees) summary.addRow([row.employee.employeeNumber, row.employee.fullName, row.employee.department ?? '—', row.totals.calculatedDays, row.totals.evidenceDays, row.totals.lateDays, row.totals.veryLateDays, row.totals.overtimeDays, row.totals.incompleteDays, row.totals.noSourceRecordDays, 'Not assessed', row.totals.reviewExceptions])
   const summaryLastEmployeeRow = summary.rowCount
-  summary.addRow(['TOTAL', '', '', report.summary.attendanceDaysCalculated, report.summary.daysWithEvidence, report.summary.lateDays, report.summary.veryLateDays, report.summary.verifiedOvertimeDays, report.summary.incompleteDays, report.employees.reduce((sum, row) => sum + row.totals.noSourceRecordDays, 0), report.summary.reviewExceptions])
-  summary.columns = [{ width: 16 }, { width: 27 }, { width: 20 }, ...Array.from({ length: 8 }, () => ({ width: 19 }))]
-  summary.autoFilter = { from: 'A3', to: `K${Math.max(3, summaryLastEmployeeRow)}` }
+  summary.addRow(['TOTAL', '', '', report.summary.attendanceDaysCalculated, report.summary.daysWithEvidence, report.summary.lateDays, report.summary.veryLateDays, report.summary.verifiedOvertimeDays, report.summary.incompleteDays, report.employees.reduce((sum, row) => sum + row.totals.noSourceRecordDays, 0), 'Not assessed', report.summary.reviewExceptions])
+  summary.columns = [{ width: 16 }, { width: 27 }, { width: 20 }, ...Array.from({ length: 9 }, () => ({ width: 19 }))]
+  summary.autoFilter = { from: 'A3', to: `L${Math.max(3, summaryLastEmployeeRow)}` }
   setPrintLayout(summary, '1:3')
 
   const exceptions = workbook.addWorksheet('Review & Exceptions')
@@ -155,6 +161,7 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
     ['Organization', report.metadata.organization], ['Report title', report.metadata.title], ['Reporting period', `${report.metadata.periodStart} to ${report.metadata.periodEnd}`],
     ['Generated at (Africa/Kigali)', formatKigaliDateTime(report.metadata.generatedAt)], ['Generated at (UTC)', report.metadata.generatedAt], ['Organization timezone', report.metadata.timezone], ['Report generation ID', report.metadata.reportId],
     ['Roster basis', report.metadata.rosterBasis], ['Active employees included', report.summary.activeEmployees], ['Attendance engine version', '2 (persisted calculations only)'],
+    ['Absence assessment', 'Not assessed: expected workdays and an attendance calendar have not been configured. No-source days are not treated as absences.'],
   ])
   metadata.addRow([])
   metadata.addRow(['Rule version ID', 'Version', 'Effective from', 'Timezone', 'Normal start', 'Late threshold', 'Very late from', 'Scheduled end', 'Overtime from', 'Weekend overtime policy'])

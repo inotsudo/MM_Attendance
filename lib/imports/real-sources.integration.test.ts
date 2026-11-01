@@ -17,7 +17,8 @@ describe('optional real attendance source integration fixtures', () => {
     expect(pages.size).toBeGreaterThan(1)
     expect(records.every((record) => Object.keys(record.fields).length === 11)).toBe(true)
     const flagged = records.filter((record) => record.warnings.length > 0).length
-    console.log(`Real iVMS fixture: ${records.length} events across ${pages.size} pages; ${flagged} events flagged for review.`)
+    const warningCounts = Object.fromEntries([...new Set(records.flatMap((record) => record.warnings.map((warning) => warning.code)))].map((code) => [code, records.flatMap((record) => record.warnings).filter((warning) => warning.code === code).length]))
+    console.log(`Real iVMS fixture: ${records.length} events across ${pages.size} pages; ${flagged} events flagged for review; issue counts ${JSON.stringify(warningCounts)}.`)
   })
 
   it.skipIf(!workbookPath)('extracts the supplied real organized attendance workbook', async () => {
@@ -27,6 +28,7 @@ describe('optional real attendance source integration fixtures', () => {
     expect(records.some((record) => record.normalizedWorkDate?.startsWith('2026-'))).toBe(true)
     expect(result.warnings.some((warning) => warning.code === 'month_label_conflict')).toBe(true)
     expect(records.some((record) => record.sourceIn === null || record.sourceOut === null)).toBe(true)
-    console.log(`Real XLSX fixture: ${records.length} daily employee rows across ${new Set(records.map((record) => record.sourceSheet)).size} sheets.`)
+    const dates = [...new Set(records.map((record) => record.normalizedWorkDate).filter((date): date is string => Boolean(date)))].sort()
+    console.log(`Real XLSX fixture: ${records.length} daily employee rows across ${new Set(records.map((record) => record.sourceSheet)).size} sheets; headings resolve to ${dates[0]} through ${dates.at(-1)}; workbook warnings ${JSON.stringify(result.warnings.map((warning) => warning.code))}.`)
   })
 })

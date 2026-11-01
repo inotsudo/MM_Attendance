@@ -99,3 +99,18 @@ export function buildPreviewSummary(parsed: ParsedAttendanceImport, matches: Ide
     warningCount,
   }
 }
+
+const confirmationBlockingIssues = new Set([
+  'month_label_conflict',
+  'year_label_conflict',
+  'ambiguous_work_date',
+  'invalid_work_date',
+  'date_year_missing',
+  'duplicate_date_heading',
+  'duplicate_date_direction',
+])
+
+export function getImportConfirmationBlockers(parsed: ParsedAttendanceImport) {
+  return [...parsed.warnings, ...parsed.records.flatMap((record) => record.warnings)]
+    .filter((warning) => confirmationBlockingIssues.has(warning.code))
+}

@@ -4,7 +4,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { normalizeEmployeeName, normalizeEmployeeNumber, parseSourceDateTime } from './time'
 import type { ImportWarning, ParsedAttendanceImport, PdfAttendanceRecord } from './types'
 
-type PositionedText = { text: string; x: number; y: number }
+export type PositionedText = { text: string; x: number; y: number }
 const FIELD_LABELS = [
   'person id', 'name', 'department', 'time', 'attendance status',
   'attendance check point', 'custom name', 'data source', 'handling type', 'temperature', 'abnormal',
@@ -33,7 +33,7 @@ function normalizedIdentity(employeeNumber: string | null, employeeName: string 
   return normalizeEmployeeNumber(employeeNumber) ?? `name:${normalizeEmployeeName(employeeName) ?? `record:${index}`}`
 }
 
-function parsePageItems(items: PositionedText[], page: number, sourceIndexStart: number, fallbackLayout?: { starts: number[]; headerY: number }): { records: PdfAttendanceRecord[]; hasHeader: boolean; layout?: { starts: number[]; headerY: number } } {
+export function parseIvmsPageItems(items: PositionedText[], page: number, sourceIndexStart: number, fallbackLayout?: { starts: number[]; headerY: number }): { records: PdfAttendanceRecord[]; hasHeader: boolean; layout?: { starts: number[]; headerY: number } } {
   const labelItems = items.map((item) => ({ ...item, normalized: item.text.toLowerCase().replace(/\s+/g, ' ').trim() }))
   const header = FIELD_LABELS.map((field) => labelItems.find((item) => item.normalized === field))
   const hasHeader = Boolean(header[0] && header[1] && header[2] && header[3] && header[4] && header[5])
@@ -140,7 +140,7 @@ export async function parseIvmsPdf(bytes: Uint8Array): Promise<ParsedAttendanceI
         if (!('str' in item) || !item.str.trim() || !('transform' in item)) return []
         return [{ text: item.str, x: item.transform[4], y: item.transform[5] }]
       })
-      const result = parsePageItems(positioned, pageNumber, records.length, layout)
+      const result = parseIvmsPageItems(positioned, pageNumber, records.length, layout)
       foundReportHeader ||= result.hasHeader
       if (result.layout) layout = result.layout
       records.push(...result.records)

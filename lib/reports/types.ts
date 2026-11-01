@@ -150,6 +150,7 @@ export type AttendanceReport = {
     activeEmployees: number
     attendanceDaysCalculated: number
     daysWithEvidence: number
+    noSourceRecordDays: number
     lateDays: number
     veryLateDays: number
     verifiedOvertimeDays: number

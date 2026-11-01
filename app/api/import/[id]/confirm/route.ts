@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { processAttendanceEvents, type AttendanceRules, type FingerprintEvent } from '@/lib/attendance-engine'
 import { getAdministratorProfile } from '@/lib/supabase/auth'
-import { annotateDuplicates, findIdentityMatches } from '@/lib/imports/preview'
+import { annotateDuplicates, findIdentityMatches, getImportConfirmationBlockers } from '@/lib/imports/preview'
 import { downloadImport, parseStoredImport } from '@/lib/imports/storage'
 import { normalizeEmployeeName, normalizeEmployeeNumber } from '@/lib/imports/time'
 import type { EmployeeOption, ImportWarning } from '@/lib/imports/types'
@@ -69,6 +69,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!['parsed', 'needs_review'].includes(record.processing_status)) return NextResponse.json({ error: 'Preview this file before confirming it.' }, { status: 409 })
 
     const parsed = await parseStoredImport(record.source_type, bytes)
+    const blockers = getImportConfirmationBlockers(parsed)
+    if (blockers.length) {
+      return NextResponse.json({
+        error: `This workbook cannot be finalized until its date information is corrected: ${[...new Set(blockers.map((item) => item.message))].join(' ')}`,
+        code: 'source_date_review_required',
+      }, { status: 409 })
+    }
     const duplicateCount = annotateDuplicates(parsed)
     const { data: employeeRows, error: employeeError } = await supabase
       .from('employees')

@@ -135,7 +135,6 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
         kind = 'no_records'
         noSourceRecordDays += 1
         notes.add('No source records were imported for this day; this is not a verified absence.')
-        exceptions.push({ severity: 'info', employeeNumber: employee.employeeNumber, employeeName: employee.fullName, date, source: null, explanation: 'No source records were imported for this employee and date. This is not a verified absence.' })
       } else {
         evidenceDays += 1
         if (current && calculation) {
@@ -252,6 +251,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       activeEmployees: employeeRows.length,
       attendanceDaysCalculated: employeeRows.reduce((sum, row) => sum + row.totals.calculatedDays, 0),
       daysWithEvidence: employeeRows.reduce((sum, row) => sum + row.totals.evidenceDays, 0),
+      noSourceRecordDays: employeeRows.reduce((sum, row) => sum + row.totals.noSourceRecordDays, 0),
       lateDays: employeeRows.reduce((sum, row) => sum + row.totals.lateDays, 0),
       veryLateDays: employeeRows.reduce((sum, row) => sum + row.totals.veryLateDays, 0),
       verifiedOvertimeDays: employeeRows.reduce((sum, row) => sum + row.totals.overtimeDays, 0),

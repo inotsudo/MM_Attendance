@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('server-only', () => ({}))
 import ExcelJS from 'exceljs'
 import { parseOrganizedExcel } from './excel-parser'
-import { parseIvmsPdf, pdfOpenErrorMessage } from './pdf-parser'
+import { parseIvmsPageItems, parseIvmsPdf, pdfOpenErrorMessage } from './pdf-parser'
 import { kigaliIso, parseSourceDateTime } from './time'
-import { annotateDuplicates, findIdentityMatches } from './preview'
+import { annotateDuplicates, findIdentityMatches, getImportConfirmationBlockers } from './preview'
 import type { ParsedAttendanceImport } from './types'
 import type { PdfAttendanceRecord, ExcelAttendanceRecord } from './types'
 
@@ -28,6 +28,26 @@ describe('attendance source parsers', () => {
     expect(records[1].normalizedTimestamp).toBeNull()
     expect(records[1].warnings.map((warning) => warning.code)).toContain('missing_employee_id')
     expect(records[1].warnings.map((warning) => warning.code)).toContain('missing_timestamp')
+  })
+
+  it('reassembles an employee name that wraps across PDF text lines', () => {
+    const labels = ['Person ID', 'Name', 'Department', 'Time', 'Attendance Status', 'Attendance Check Point', 'Custom Name', 'Data Source', 'Handling Type', 'Temperature', 'Abnormal']
+    const starts = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    const items = labels.map((text, index) => ({ text, x: starts[index], y: 200 }))
+    items.push(
+      { text: 'EMP-5', x: 12, y: 100 },
+      { text: 'A Long Employee', x: 52, y: 100 },
+      { text: 'Name', x: 52, y: 90 },
+      { text: 'Operations', x: 102, y: 100 },
+      { text: '2026-09-14 08:00:00', x: 152, y: 100 },
+      { text: 'Check-In', x: 202, y: 100 },
+      { text: 'Main Entrance', x: 252, y: 100 },
+    )
+    const result = parseIvmsPageItems(items, 1, 0)
+    expect(result.records).toHaveLength(1)
+    expect(result.records[0].employeeName).toBe('A Long Employee Name')
+    expect(result.records[0].normalizedTimestamp).toBe('2026-09-14T06:00:00.000Z')
+    expect(result.records[0].sourcePage).toBe(1)
   })
 
   it('rejects non-PDF signatures and reports a valid non-iVMS PDF as unsupported', async () => {
@@ -60,6 +80,55 @@ describe('attendance source parsers', () => {
     expect(records[1].sourceIn).toBeNull()
     expect(records[1].sourceOut).toBeNull()
     expect(result.warnings.some((warning) => warning.code === 'month_label_conflict')).toBe(true)
+    expect(getImportConfirmationBlockers(result).some((warning) => warning.code === 'month_label_conflict')).toBe(true)
+  })
+
+  it('blocks ambiguous date headings and flags invalid times without normalizing them', async () => {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Attendance Sheet')
+    sheet.getCell('A1').value = 'Year'; sheet.getCell('B1').value = 2026
+    sheet.getCell('A3').value = 'ID'; sheet.getCell('B3').value = 'Employees Names'; sheet.getCell('D3').value = '09/10/2026'
+    sheet.getCell('D4').value = 'IN'; sheet.getCell('E4').value = 'OUT'
+    sheet.getCell('A5').value = 'EMP-1'; sheet.getCell('B5').value = 'Test Employee'; sheet.getCell('D5').value = '25:00'; sheet.getCell('E5').value = '*17:30:00'
+    const result = await parseOrganizedExcel(new Uint8Array(await workbook.xlsx.writeBuffer()))
+    const record = (result.records as ExcelAttendanceRecord[])[0]
+    expect(record.normalizedWorkDate).toBeNull()
+    expect(record.normalizedInAt).toBeNull()
+    expect(record.normalizedOutAt).toBeNull()
+    expect(record.warnings.map((warning) => warning.code)).toContain('ambiguous_work_date')
+    expect(record.warnings.map((warning) => warning.code)).toContain('invalid_in_time')
+    expect(getImportConfirmationBlockers(result).map((warning) => warning.code)).toContain('ambiguous_work_date')
+  })
+
+  it('flags duplicate employee rows and preserves each row for review', async () => {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Attendance Sheet')
+    sheet.getCell('A3').value = 'ID'; sheet.getCell('B3').value = 'Employees Names'; sheet.getCell('D3').value = new Date(Date.UTC(1900, 8, 14))
+    sheet.getCell('D4').value = 'IN'; sheet.getCell('E4').value = 'OUT'
+    sheet.getCell('A5').value = 'EMP-1'; sheet.getCell('B5').value = 'Test Employee'; sheet.getCell('D5').value = '*08:00:00'
+    sheet.getCell('A6').value = 'EMP-1'; sheet.getCell('B6').value = 'Test Employee'; sheet.getCell('D6').value = '*08:05:00'
+    const result = await parseOrganizedExcel(new Uint8Array(await workbook.xlsx.writeBuffer()))
+    const records = result.records as ExcelAttendanceRecord[]
+    expect(records).toHaveLength(2)
+    expect(records.map((record) => record.sourceRow)).toEqual([5, 6])
+    expect(records.every((record) => record.warnings.some((warning) => warning.code === 'duplicate_employee_id'))).toBe(true)
+  })
+
+  it('uses cached Excel formula values and flags formula cells without a cached result', async () => {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Attendance Sheet')
+    sheet.getCell('A1').value = 'Year'; sheet.getCell('B1').value = 2026
+    sheet.getCell('A3').value = 'ID'; sheet.getCell('B3').value = 'Employees Names'; sheet.getCell('D3').value = new Date(Date.UTC(1900, 8, 14))
+    sheet.getCell('D4').value = 'IN'; sheet.getCell('E4').value = 'OUT'
+    sheet.getCell('A5').value = 'EMP-1'; sheet.getCell('B5').value = 'Test Employee'
+    sheet.getCell('D5').value = { formula: 'TIME(8,0,0)', result: 8 / 24 }
+    sheet.getCell('E5').value = { formula: 'TIME(17,30,0)' }
+    const result = await parseOrganizedExcel(new Uint8Array(await workbook.xlsx.writeBuffer()))
+    const record = (result.records as ExcelAttendanceRecord[])[0]
+    expect(record.normalizedInAt).toBe('2026-09-14T06:00:00.000Z')
+    expect(record.rawValues.in).toBe('=TIME(8,0,0)')
+    expect(record.normalizedOutAt).toBeNull()
+    expect(record.warnings.map((warning) => warning.code)).toContain('formula_result_missing')
   })
 
   it('rejects malformed and unsupported workbooks', async () => {

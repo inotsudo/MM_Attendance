@@ -1,5 +1,6 @@
 import type { AttendanceReport, ReportDayCell } from './types'
 import { formatKigaliDateTime } from './dataset'
+import { reportDayStatus } from './day-status'
 
 const PAGE_W = 1190
 const PAGE_H = 842
@@ -81,7 +82,7 @@ function pageHeader(page: PdfPage, report: AttendanceReport) {
   drawText(c, MARGIN, 38, report.metadata.title, 18, true, [1, 1, 1])
   drawText(c, PAGE_W - 385, 20, `Period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`, 9, true, [1, 1, 1])
   drawText(c, PAGE_W - 385, 40, `Generated ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone})`, 8, false, [1, 1, 1])
-  drawText(c, MARGIN, 91, `Employees ${report.summary.employeesIncluded}  |  Calculated days ${report.summary.attendanceDaysCalculated}  |  Late ${report.summary.lateDays}  |  Very late ${report.summary.veryLateDays}  |  Verified overtime ${report.summary.verifiedOvertimeDays}  |  Review exceptions ${report.summary.reviewExceptions}`, 8, true, NAVY)
+  drawText(c, MARGIN, 91, `Employees ${report.summary.employeesIncluded}  |  Calculated ${report.summary.attendanceDaysCalculated}  |  No source ${report.summary.noSourceRecordDays}  |  Late ${report.summary.lateDays}  |  Very late ${report.summary.veryLateDays}  |  OT evidence ${report.summary.verifiedOvertimeDays}  |  Incomplete ${report.summary.incompleteDays}  |  Review ${report.summary.reviewExceptions}`, 7.2, true, NAVY)
   drawText(c, MARGIN, 107, page.title, 11, true, NAVY)
 }
 
@@ -92,66 +93,94 @@ function finishPage(page: PdfPage, index: number, total: number, report: Attenda
 }
 
 function employeePages(report: AttendanceReport) {
-  const columns = [
-    { label: 'Employee ID', width: 62 }, { label: 'Employee name', width: 108 }, { label: 'Department', width: 85 },
-    ...report.dates.flatMap(() => [{ label: 'IN', width: 38 }, { label: 'OUT', width: 38 }]),
-    { label: 'Calc', width: 38 }, { label: 'Late', width: 36 }, { label: 'Very late', width: 45 }, { label: 'OT', width: 34 }, { label: 'No source', width: 46 }, { label: 'Review', width: 42 },
-  ]
-  const xTotal = columns.reduce((sum, column) => sum + column.width, 0)
   const maxRows = 13
   const rowChunks: typeof report.employees[] = []
   for (let i = 0; i < report.employees.length; i += maxRows) rowChunks.push(report.employees.slice(i, i + maxRows))
   if (!rowChunks.length) rowChunks.push([])
-  return rowChunks.map((employees, pageIndex) => {
-    const page: PdfPage = { title: `Weekly attendance detail${report.employees.length ? ` — employees ${pageIndex * maxRows + 1}-${Math.min((pageIndex + 1) * maxRows, report.employees.length)} of ${report.employees.length}` : ''}`, commands: [] }
-    pageHeader(page, report)
-    const startX = (PAGE_W - xTotal) / 2
-    const headerTop = 130
-    const headerHeight = 34
-    let x = startX
-    for (let index = 0; index < columns.length; index++) {
-      const column = columns[index]
-      rect(page.commands, x, headerTop, column.width, headerHeight, NAVY, [1, 1, 1])
-      if (index >= 3 && index < 3 + report.dates.length * 2) {
-        drawText(page.commands, x + 4, headerTop + 21, column.label, 6, true, [1, 1, 1])
-      } else {
-        wrap(column.label, Math.max(4, Math.floor(column.width / 5)), 2).forEach((text, lineIndex) => drawText(page.commands, x + 3, headerTop + 7 + lineIndex * 10, text, 7, true, [1, 1, 1]))
-      }
-      x += column.width
-    }
-    let dateX = startX + columns.slice(0, 3).reduce((sum, column) => sum + column.width, 0)
-    report.dates.forEach((date, index) => {
-      const pairWidth = columns[3 + index * 2].width + columns[4 + index * 2].width
-      const label = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00Z`))
-      drawText(page.commands, dateX + Math.max(1, (pairWidth - label.length * 3.2) / 2), headerTop + 2, label, 5.2, true, [1, 1, 1])
-      dateX += pairWidth
-    })
-    const rowHeight = 43
-    employees.forEach((employee, rowIndex) => {
-      const top = headerTop + headerHeight + rowIndex * rowHeight
-      const cells: Array<{ text: string; fill?: Rgb }> = [
-        { text: employee.employee.employeeNumber }, { text: employee.employee.fullName }, { text: employee.employee.department ?? '—' },
-        ...employee.days.flatMap((day) => [
-          { text: day.sourceInValues.join(', ') || (day.kind === 'calculated' ? day.inTimes.join(', ') : ''), fill: dayColor(day) },
-          { text: day.sourceOutValues.join(', ') || (day.kind === 'calculated' ? day.outTimes.join(', ') : ''), fill: dayColor(day) },
-        ]),
-        { text: String(employee.totals.calculatedDays) }, { text: String(employee.totals.lateDays) }, { text: String(employee.totals.veryLateDays) }, { text: String(employee.totals.overtimeDays) }, { text: String(employee.totals.noSourceRecordDays) }, { text: String(employee.totals.reviewExceptions) },
+  const dateChunks: number[][] = []
+  if (report.employees.length) {
+    for (let index = 0; index < report.dates.length; index += 4) dateChunks.push(report.dates.slice(index, index + 4).map((_, dateIndex) => index + dateIndex))
+  }
+  if (!dateChunks.length) dateChunks.push([])
+  const pages: PdfPage[] = []
+  for (let employeePage = 0; employeePage < rowChunks.length; employeePage++) {
+    const employees = rowChunks[employeePage]
+    for (const dateIndices of dateChunks) {
+      const fixedColumns = [
+        { label: 'Employee ID', width: 54 }, { label: 'Employee name', width: 92 }, { label: 'Department', width: 66 },
       ]
-      let cellX = startX
-      cells.forEach((cell, columnIndex) => {
-        const width = columns[columnIndex].width
-        rect(page.commands, cellX, top, width, rowHeight, cell.fill ?? (rowIndex % 2 ? [0.98, 0.98, 0.99] : [1, 1, 1]), [0.84, 0.84, 0.87])
-        const isTimeCell = columnIndex >= 3 && columnIndex < 3 + report.dates.length * 2
-        const lines = wrap(cell.text, isTimeCell ? 18 : Math.max(4, Math.floor((width - 6) / 4)), isTimeCell ? 3 : 3)
-        lines.forEach((text, lineIndex) => drawText(page.commands, cellX + 3, top + 5 + lineIndex * 9, text, isTimeCell ? 5.8 : 6.4, columnIndex < 2, [0.18, 0.18, 0.22]))
-        cellX += width
+      const summaryColumns = [
+        { label: 'Calc', width: 34 }, { label: 'Absence*', width: 44 }, { label: 'Late', width: 32 }, { label: 'Very late', width: 44 },
+        { label: 'OT', width: 30 }, { label: 'Incomplete days', width: 50 }, { label: 'No source', width: 46 }, { label: 'Review', width: 40 },
+      ]
+      const dateGroupWidth = dateIndices.length ? Math.floor((PAGE_W - MARGIN * 2 - fixedColumns.reduce((sum, column) => sum + column.width, 0) - summaryColumns.reduce((sum, column) => sum + column.width, 0)) / dateIndices.length) : 0
+      const inWidth = Math.min(42, Math.floor((dateGroupWidth - 70) / 2))
+      const outWidth = inWidth
+      const statusWidth = dateGroupWidth - inWidth - outWidth
+      const columns = [
+        ...fixedColumns,
+        ...dateIndices.flatMap(() => [{ label: 'IN', width: inWidth }, { label: 'OUT', width: outWidth }, { label: 'Daily status', width: statusWidth }]),
+        ...summaryColumns,
+      ]
+      const xTotal = columns.reduce((sum, column) => sum + column.width, 0)
+      const pageLabel = dateIndices.length ? `dates ${report.dates[dateIndices[0]]}–${report.dates[dateIndices.at(-1)!]}` : 'no attendance dates'
+      const employeeLabel = report.employees.length ? `employees ${employeePage * maxRows + 1}-${Math.min((employeePage + 1) * maxRows, report.employees.length)} of ${report.employees.length}` : ''
+      const page: PdfPage = { title: `Weekly attendance detail — ${pageLabel}${employeeLabel ? ` · ${employeeLabel}` : ''}`, commands: [] }
+      pageHeader(page, report)
+      const startX = (PAGE_W - xTotal) / 2
+      const headerTop = 130
+      const headerHeight = 34
+      let x = startX
+      for (let index = 0; index < columns.length; index++) {
+        const column = columns[index]
+        rect(page.commands, x, headerTop, column.width, headerHeight, NAVY, [1, 1, 1])
+        if (index >= 3 && index < 3 + dateIndices.length * 3) drawText(page.commands, x + 4, headerTop + 22, column.label, 6.5, true, [1, 1, 1])
+        else wrap(column.label, Math.max(4, Math.floor(column.width / 5)), 2).forEach((text, lineIndex) => drawText(page.commands, x + 3, headerTop + 7 + lineIndex * 10, text, 7, true, [1, 1, 1]))
+        x += column.width
+      }
+      let dateX = startX + fixedColumns.reduce((sum, column) => sum + column.width, 0)
+      dateIndices.forEach((dateIndex, groupIndex) => {
+        const pairWidth = columns[3 + groupIndex * 3].width + columns[4 + groupIndex * 3].width + columns[5 + groupIndex * 3].width
+        const date = report.dates[dateIndex]
+        const label = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00Z`))
+        drawText(page.commands, dateX + Math.max(1, (pairWidth - label.length * 3.5) / 2), headerTop + 3, label, 6, true, [1, 1, 1])
+        dateX += pairWidth
       })
-    })
-    if (!employees.length) drawText(page.commands, MARGIN, 180, 'No active employees were present in the roster at report generation time.', 10)
-    drawText(page.commands, MARGIN, 752, 'No records means no source evidence was imported for that employee and date; it is not a verified absence. PDF fingerprint events have unknown direction; no IN or OUT direction is inferred.', 7, false, [0.38, 0.38, 0.43])
-    drawText(page.commands, MARGIN, 766, `Roster basis: ${report.metadata.rosterBasis}`, 7, false, [0.38, 0.38, 0.43])
-    return page
-  })
+      const rowHeight = 43
+      employees.forEach((employee, rowIndex) => {
+        const top = headerTop + headerHeight + rowIndex * rowHeight
+        const cells: Array<{ text: string; fill?: Rgb }> = [
+          { text: employee.employee.employeeNumber }, { text: employee.employee.fullName }, { text: employee.employee.department ?? '—' },
+          ...dateIndices.flatMap((dateIndex) => {
+            const day = employee.days[dateIndex]
+            return [
+              { text: day.inTimes.join(', '), fill: dayColor(day) },
+              { text: day.outTimes.join(', '), fill: dayColor(day) },
+              { text: reportDayStatus(day), fill: dayColor(day) },
+            ]
+          }),
+          { text: String(employee.totals.calculatedDays) }, { text: 'N/A' }, { text: String(employee.totals.lateDays) }, { text: String(employee.totals.veryLateDays) },
+          { text: String(employee.totals.overtimeDays) }, { text: String(employee.totals.incompleteDays) }, { text: String(employee.totals.noSourceRecordDays) }, { text: String(employee.totals.reviewExceptions) },
+        ]
+        let cellX = startX
+        cells.forEach((cell, columnIndex) => {
+          const width = columns[columnIndex].width
+          rect(page.commands, cellX, top, width, rowHeight, cell.fill ?? (rowIndex % 2 ? [0.98, 0.98, 0.99] : [1, 1, 1]), [0.84, 0.84, 0.87])
+          const isDailyCell = columnIndex >= 3 && columnIndex < 3 + dateIndices.length * 3
+          const isStatusCell = isDailyCell && (columnIndex - 3) % 3 === 2
+          const isTimeCell = isDailyCell && !isStatusCell
+          const lines = wrap(cell.text, isTimeCell ? 16 : Math.max(4, Math.floor((width - 6) / (isStatusCell ? 3.3 : 4))), isStatusCell ? 4 : 3)
+          lines.forEach((text, lineIndex) => drawText(page.commands, cellX + 3, top + 5 + lineIndex * 9, text, isTimeCell ? 6.2 : isStatusCell ? 6 : 6.5, columnIndex < 2, [0.18, 0.18, 0.22]))
+          cellX += width
+        })
+      })
+      if (!employees.length) drawText(page.commands, MARGIN, 180, 'No active employees were present in the roster at report generation time.', 10)
+      drawText(page.commands, MARGIN, 752, 'Absence is not assessed because no work calendar is configured. No source records are not verified absences. Directionless PDF events are not assigned IN/OUT.', 7, false, [0.38, 0.38, 0.43])
+      drawText(page.commands, MARGIN, 766, `Roster basis: ${report.metadata.rosterBasis}`, 7, false, [0.38, 0.38, 0.43])
+      pages.push(page)
+    }
+  }
+  return pages
 }
 
 function tablePages(report: AttendanceReport, title: string, headers: string[], rows: string[][], widths: number[], rowLimit = 24) {

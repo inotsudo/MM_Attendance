@@ -71,6 +71,7 @@ describe('attendance report dataset and actual exports', () => {
     expect(report.summary.reviewExceptions).toBeGreaterThan(0)
     expect(report.imports.map((item) => item.id)).toContain('import-pdf')
     expect(report.rules.map((rule) => rule.id)).toContain('rule-1')
+    expect(report.diagnostics).toMatchObject({ sourceRecordsFound: 7, validSourceRecords: 7, invalidSourceRecords: 0, matchedEmployees: 1, unmatchedRecords: 0, employeesIncluded: 2, calculatedEmployeeDays: 3, incompleteEmployeeDays: 2 })
   })
 
   it('suppresses stale calculations when rules, engine version or source coverage differ', () => {
@@ -108,7 +109,7 @@ describe('attendance report dataset and actual exports', () => {
     const page = await pdf.getPage(1)
     const content = await page.getTextContent()
     const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ')
-    expect(text).toContain('No active employees')
+    expect(text).toContain('No matched employee has attendance evidence')
     expect(text).toContain('No review exceptions')
   })
 
@@ -184,13 +185,19 @@ describe('attendance report dataset and actual exports', () => {
     authMocks.getAdministratorProfile.mockResolvedValueOnce(null)
     authMocks.loadAttendanceReportInput.mockClear()
     const { GET } = await import('../../app/api/reports/weekly/route')
-    const response = await GET(new Request('http://localhost/api/reports/weekly?from=2026-10-26&to=2026-11-01&format=pdf'))
+    const response = await GET(new Request('http://localhost/api/reports/weekly?importId=00000000-0000-4000-8000-000000000001&from=2026-10-26&to=2026-11-01&format=pdf'))
     expect(response.status).toBe(401)
     expect(authMocks.loadAttendanceReportInput).not.toHaveBeenCalled()
 
     authMocks.getAdministratorProfile.mockResolvedValueOnce({ id: 'admin-1' })
-    const invalidWeek = await GET(new Request('http://localhost/api/reports/weekly?from=2026-10-27&to=2026-11-02&format=pdf'))
+    const invalidWeek = await GET(new Request('http://localhost/api/reports/weekly?importId=00000000-0000-4000-8000-000000000001&from=2026-10-27&to=2026-11-02&format=pdf'))
     expect(invalidWeek.status).toBe(400)
+    expect(authMocks.loadAttendanceReportInput).not.toHaveBeenCalled()
+
+    authMocks.getAdministratorProfile.mockResolvedValueOnce({ id: 'admin-1' })
+    const missingImport = await GET(new Request('http://localhost/api/reports/weekly?from=2026-10-26&to=2026-11-01&format=pdf'))
+    expect(missingImport.status).toBe(400)
+    expect((await missingImport.json()).error).toContain('Select a processed attendance import')
     expect(authMocks.loadAttendanceReportInput).not.toHaveBeenCalled()
   })
 
@@ -198,10 +205,13 @@ describe('attendance report dataset and actual exports', () => {
     authMocks.getAdministratorProfile.mockResolvedValueOnce({ id: 'admin-1' })
     authMocks.loadAttendanceReportInput.mockResolvedValueOnce(reportInput)
     const { GET } = await import('../../app/api/reports/weekly/route')
-    const response = await GET(new Request('http://localhost/api/reports/weekly?from=2026-10-26&to=2026-11-01&format=xlsx'))
+    const response = await GET(new Request('http://localhost/api/reports/weekly?importId=00000000-0000-4000-8000-000000000001&from=2026-10-26&to=2026-11-01&format=xlsx'))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     expect(response.headers.get('content-disposition')).toMatch(/\.xlsx"/)
+    expect(response.headers.get('X-Report-Source-Records')).toBe('7')
+    expect(response.headers.get('X-Report-Employees')).toBe('2')
+    expect(authMocks.loadAttendanceReportInput).toHaveBeenCalledWith('2026-10-26', '2026-11-01', '00000000-0000-4000-8000-000000000001', expect.any(String), expect.any(String))
     const bytes = Buffer.from(await response.arrayBuffer())
     expect([...bytes.subarray(0, 2)]).toEqual([0x50, 0x4b])
     const workbook = new ExcelJS.Workbook()

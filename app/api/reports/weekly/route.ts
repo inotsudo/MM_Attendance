@@ -28,8 +28,10 @@ export async function GET(request: Request) {
   const defaultPeriod = currentWeek()
   const from = query.get('from') ?? defaultPeriod.from
   const to = query.get('to') ?? defaultPeriod.to
+  const importId = query.get('importId')
   const format = query.get('format') ?? 'pdf'
   if (!['pdf', 'xlsx'].includes(format)) return NextResponse.json({ error: 'Choose PDF or Excel format.' }, { status: 400 })
+  if (!importId || !/^[0-9a-f-]{36}$/i.test(importId)) return NextResponse.json({ error: 'Select a processed attendance import before generating a report.' }, { status: 400 })
   if (!validDate(from) || !validDate(to)) return NextResponse.json({ error: 'Choose a valid reporting week.' }, { status: 400 })
   const start = new Date(`${from}T00:00:00Z`)
   const end = new Date(`${to}T00:00:00Z`)
@@ -40,8 +42,12 @@ export async function GET(request: Request) {
   try {
     const reportId = crypto.randomUUID()
     const generatedAt = new Date().toISOString()
-    const input = await loadAttendanceReportInput(from, to, reportId, generatedAt)
+    const input = await loadAttendanceReportInput(from, to, importId, reportId, generatedAt)
     const report = buildAttendanceReport(input)
+    console.info('Attendance report data diagnostics', { reportId, importId, periodStart: from, periodEnd: to, ...report.diagnostics })
+    if (report.diagnostics.matchedEmployees > 0 && report.diagnostics.employeesIncluded === 0) {
+      throw new Error('The selected import has matched attendance records, but none of the matched employees are available in the active employee roster. Review employee status and matching before exporting.')
+    }
     const period = `${from}-to-${to}`
     if (format === 'xlsx') {
       const bytes = await createAttendanceWorkbook(report)
@@ -51,6 +57,9 @@ export async function GET(request: Request) {
           'Content-Disposition': `attachment; filename="MMRJD-weekly-attendance-${period}.xlsx"`,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
+          'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),
+          'X-Report-Employees': String(report.diagnostics.employeesIncluded),
+          'X-Report-Calculated-Days': String(report.diagnostics.calculatedEmployeeDays),
         },
       })
     }
@@ -61,6 +70,9 @@ export async function GET(request: Request) {
         'Content-Disposition': `attachment; filename="MMRJD-weekly-attendance-${period}.pdf"`,
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
+        'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),
+        'X-Report-Employees': String(report.diagnostics.employeesIncluded),
+        'X-Report-Calculated-Days': String(report.diagnostics.calculatedEmployeeDays),
       },
     })
   } catch (error) {

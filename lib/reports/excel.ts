@@ -105,7 +105,7 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
     rules: [{ type: 'expression', formulae: [`AND(ISNUMBER(${weekly.getColumn(summaryStart).letter}8),${weekly.getColumn(summaryStart).letter}8>0)`], priority: 1, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4D6' } }, font: { color: { argb: '8A6414' }, bold: true } } }],
   })
   if (!report.employees.length) {
-    const row = weekly.addRow(['No active employees were present in the roster at report generation time.'])
+    const row = weekly.addRow(['No matched employee has attendance evidence in this selected import and reporting period; see Review & Exceptions for unmatched source records.'])
     weekly.mergeCells(row.number, 1, row.number, lastColumn)
   }
   if (report.employees.length) weekly.autoFilter = { from: 'A7', to: `${weekly.getColumn(lastColumn).letter}${weekly.rowCount}` }
@@ -160,7 +160,10 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
   metadata.addRows([
     ['Organization', report.metadata.organization], ['Report title', report.metadata.title], ['Reporting period', `${report.metadata.periodStart} to ${report.metadata.periodEnd}`],
     ['Generated at (Africa/Kigali)', formatKigaliDateTime(report.metadata.generatedAt)], ['Generated at (UTC)', report.metadata.generatedAt], ['Organization timezone', report.metadata.timezone], ['Report generation ID', report.metadata.reportId],
-    ['Roster basis', report.metadata.rosterBasis], ['Active employees included', report.summary.activeEmployees], ['Attendance engine version', '2 (persisted calculations only)'],
+    ['Roster basis', report.metadata.rosterBasis], ['Employees included', report.summary.employeesIncluded], ['Attendance engine version', '2 (persisted calculations only)'],
+    ['Source records found in period', report.diagnostics.sourceRecordsFound], ['Valid source records', report.diagnostics.validSourceRecords], ['Invalid source records', report.diagnostics.invalidSourceRecords],
+    ['Matched employees', report.diagnostics.matchedEmployees], ['Unmatched source records', report.diagnostics.unmatchedRecords], ['Calculated employee-days', report.diagnostics.calculatedEmployeeDays],
+    ['Incomplete employee-days', report.diagnostics.incompleteEmployeeDays], ['Review exceptions', report.diagnostics.reviewExceptions],
     ['Absence assessment', 'Not assessed: expected workdays and an attendance calendar have not been configured. No-source days are not treated as absences.'],
   ])
   metadata.addRow([])

@@ -316,20 +316,35 @@ function EmployeeView({ draft, setDraft, saved, onSave }: { draft: { id: string;
 function ReportsView({ exportAction }: { exportAction: { current: (() => void) | null } }) {
   const initialWeek = useMemo(() => currentKigaliWeek(), [])
   const [weekStart, setWeekStart] = useState(initialWeek.from)
+  const [importId, setImportId] = useState('')
+  const [imports, setImports] = useState<ImportHistoryRow[]>([])
+  const [importsError, setImportsError] = useState<string | null>(null)
   const [format, setFormat] = useState<'pdf' | 'xlsx'>('pdf')
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [download, setDownload] = useState<{ url: string; filename: string; generatedAt: string } | null>(null)
+  const [download, setDownload] = useState<{ url: string; filename: string; generatedAt: string; message: string } | null>(null)
   useEffect(() => () => { if (download) URL.revokeObjectURL(download.url) }, [download])
   const weekEnd = addDays(weekStart, 6)
   const validWeek = Boolean(weekStart) && new Date(`${weekStart}T00:00:00Z`).getUTCDay() === 1
 
+  useEffect(() => {
+    let current = true
+    fetch('/api/import', { cache: 'no-store' })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error ?? 'Processed imports could not be loaded.')
+        if (current) { setImports(result.imports ?? []); setImportsError(null) }
+      })
+      .catch((issue) => { if (current) setImportsError(issue instanceof Error ? issue.message : 'Processed imports could not be loaded.') })
+    return () => { current = false }
+  }, [])
+
   async function generate() {
-    if (!validWeek) return
+    if (!validWeek || !importId) return
     setGenerating(true)
     setError(null)
     try {
-      const response = await fetch(`/api/reports/weekly?from=${encodeURIComponent(weekStart)}&to=${encodeURIComponent(weekEnd)}&format=${format}`, { cache: 'no-store' })
+      const response = await fetch(`/api/reports/weekly?importId=${encodeURIComponent(importId)}&from=${encodeURIComponent(weekStart)}&to=${encodeURIComponent(weekEnd)}&format=${format}`, { cache: 'no-store' })
       if (!response.ok) {
         const result = await response.json().catch(() => null)
         throw new Error(result?.error ?? 'The report could not be generated.')
@@ -337,7 +352,13 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const filename = `MMRJD-weekly-attendance-${weekStart}-to-${weekEnd}.${format}`
-      setDownload({ url, filename, generatedAt: new Date().toISOString() })
+      const sourceRecords = Number(response.headers.get('X-Report-Source-Records') ?? '0')
+      const employees = Number(response.headers.get('X-Report-Employees') ?? '0')
+      const calculatedDays = Number(response.headers.get('X-Report-Calculated-Days') ?? '0')
+      const message = sourceRecords === 0
+        ? 'No attendance records from the selected import fall within this reporting week. An explicitly empty report was generated.'
+        : `${sourceRecords} source records, ${employees} matched employees, and ${calculatedDays} calculated employee-days included.`
+      setDownload({ url, filename, generatedAt: new Date().toISOString(), message })
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = filename
@@ -354,18 +375,21 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
   useEffect(() => {
     exportAction.current = () => { void generate() }
     return () => { exportAction.current = null }
-  }, [weekStart, format])
+  }, [weekStart, format, importId])
 
   return <section className="reports-grid">
     <section className="panel report-builder">
       <div className="panel-heading"><div><h2>Prepare weekly report</h2><p>Generate from confirmed attendance evidence and current persisted calculations.</p></div><FileBarChart className="heading-icon" /></div>
+      {importsError && <p role="alert" className="form-notice">{importsError}</p>}
+      <label className="field-label">Attendance import<select value={importId} onChange={(event) => setImportId(event.target.value)}><option value="">Select a processed import</option>{imports.map((item) => <option key={item.id} value={item.id} disabled={!['completed', 'needs_review'].includes(item.processing_status)}>{item.original_filename} · {item.source_type === 'ivms_pdf_original_records' ? 'iVMS PDF' : 'Attendance XLSX'} · {item.processing_status.replaceAll('_', ' ')}</option>)}</select></label>
+      <p className="subtitle">The report uses only the selected import. Uploaded or failed files must be processed before they can be reported.</p>
       <label className="field-label">Week starting Monday<input type="date" value={weekStart} onChange={(event) => setWeekStart(event.target.value)} /></label>
       <p className="subtitle">Reporting period: {weekStart || '—'} to {weekEnd || '—'} (Africa/Kigali)</p>
       {!validWeek && <p role="alert" className="form-notice">Choose a Monday to generate a complete Monday-to-Sunday report.</p>}
       <label className="field-label">Format<select value={format} onChange={(event) => setFormat(event.target.value as 'pdf' | 'xlsx')}><option value="pdf">PDF</option><option value="xlsx">Excel workbook</option></select></label>
-      <button className="button primary" onClick={generate} disabled={!validWeek || generating}>{generating ? 'Generating report…' : <><FileText /> Download {format === 'pdf' ? 'PDF' : 'Excel'} report</>}</button>
+      <button className="button primary" onClick={generate} disabled={!validWeek || !importId || generating}>{generating ? 'Generating report…' : <><FileText /> Download {format === 'pdf' ? 'PDF' : 'Excel'} report</>}</button>
       {error && <p role="alert" className="form-notice">{error}</p>}
-      {download && <p role="status" className="form-notice">Report generated. <a href={download.url} download={download.filename}>Download again: {download.filename}</a> · {new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(download.generatedAt))} (Africa/Kigali)</p>}
+      {download && <p role="status" className="form-notice">Report generated: {download.message} <a href={download.url} download={download.filename}>Download again: {download.filename}</a> · {new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(download.generatedAt))} (Africa/Kigali)</p>}
       <p className="subtitle">Days without imported records are not classified as absences. Fingerprint events remain direction-unknown. Stale calculations are shown as requiring review.</p>
     </section>
     <section className="panel"><div className="panel-heading"><div><h2>Report contents</h2><p>Both formats use the same persisted report dataset and include provenance.</p></div><FileCheck2 className="heading-icon" /></div>

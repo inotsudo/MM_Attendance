@@ -147,7 +147,6 @@ export type AttendanceReport = {
   fingerprintEvidence: ReportEvidence[]
   summary: {
     employeesIncluded: number
-    activeEmployees: number
     attendanceDaysCalculated: number
     daysWithEvidence: number
     noSourceRecordDays: number
@@ -155,6 +154,17 @@ export type AttendanceReport = {
     veryLateDays: number
     verifiedOvertimeDays: number
     incompleteDays: number
+    reviewExceptions: number
+  }
+  diagnostics: {
+    sourceRecordsFound: number
+    validSourceRecords: number
+    invalidSourceRecords: number
+    matchedEmployees: number
+    unmatchedRecords: number
+    employeesIncluded: number
+    calculatedEmployeeDays: number
+    incompleteEmployeeDays: number
     reviewExceptions: number
   }
 }

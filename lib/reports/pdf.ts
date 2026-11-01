@@ -174,7 +174,7 @@ function employeePages(report: AttendanceReport) {
           cellX += width
         })
       })
-      if (!employees.length) drawText(page.commands, MARGIN, 180, 'No active employees were present in the roster at report generation time.', 10)
+      if (!employees.length) drawText(page.commands, MARGIN, 180, 'No matched employee has attendance evidence in this selected import and reporting period; see Review & Exceptions for unmatched source records.', 10)
       drawText(page.commands, MARGIN, 752, 'Absence is not assessed because no work calendar is configured. No source records are not verified absences. Directionless PDF events are not assigned IN/OUT.', 7, false, [0.38, 0.38, 0.43])
       drawText(page.commands, MARGIN, 766, `Roster basis: ${report.metadata.rosterBasis}`, 7, false, [0.38, 0.38, 0.43])
       pages.push(page)
@@ -228,7 +228,8 @@ function metadataPages(report: AttendanceReport) {
     drawText(page.commands, MARGIN, 132, `Report generation ID: ${report.metadata.reportId}`, 9, true, NAVY)
     drawText(page.commands, MARGIN, 149, `Generated: ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}); UTC ${report.metadata.generatedAt}; Period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`, 8, false)
     drawText(page.commands, MARGIN, 165, report.metadata.rosterBasis, 7, false)
-    const startTop = 187
+    drawText(page.commands, MARGIN, 177, `Data diagnostics: ${report.diagnostics.sourceRecordsFound} source records (${report.diagnostics.validSourceRecords} valid, ${report.diagnostics.invalidSourceRecords} invalid); ${report.diagnostics.matchedEmployees} matched employees; ${report.diagnostics.unmatchedRecords} unmatched records; ${report.diagnostics.calculatedEmployeeDays} calculated employee-days; ${report.diagnostics.incompleteEmployeeDays} incomplete; ${report.diagnostics.reviewExceptions} review exceptions.`, 7, false)
+    const startTop = 199
     const widths = [140, 280, 650]
     const headers = ['Type', 'Reference', 'Details']
     let x = MARGIN

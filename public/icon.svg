@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180">
+  <circle cx="90" cy="90" r="87" fill="#fff" stroke="#4a358f" stroke-width="3"/>
+  <defs><clipPath id="badge"><circle cx="90" cy="90" r="81"/></clipPath></defs>
+  <image href="/images.jpeg" x="9" y="9" width="162" height="162" preserveAspectRatio="xMidYMid meet" clip-path="url(#badge)"/>
+</svg>

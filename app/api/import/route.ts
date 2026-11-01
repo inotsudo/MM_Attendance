@@ -3,6 +3,7 @@ import { getAdministratorProfile } from '@/lib/supabase/auth'
 import { isSupabaseConfigured } from '@/lib/supabase/config'
 import { ATTENDANCE_BUCKET, MAX_IMPORT_SIZE } from '@/lib/imports/storage'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
+import { createImportHistoryWorkbook } from '@/lib/imports/history-workbook'
 import type { ImportSourceType } from '@/lib/imports/types'
 
 export const runtime = 'nodejs'
@@ -40,6 +41,18 @@ export async function GET(request: Request) {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': 'attachment; filename="attendance-import-history.csv"',
         'Cache-Control': 'private, no-store',
+      },
+    })
+  }
+  if (new URL(request.url).searchParams.get('format') === 'xlsx') {
+    const generatedAt = new Date()
+    const bytes = await createImportHistoryWorkbook(data ?? [], generatedAt)
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="MMRJD-attendance-import-history-${generatedAt.toISOString().slice(0, 10)}.xlsx"`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
       },
     })
   }

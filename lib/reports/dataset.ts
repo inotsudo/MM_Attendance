@@ -51,15 +51,25 @@ function formatKigaliClock(value: string) {
 
 function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[], employees: ReportEmployee[]): ManualAttendanceRow[] {
   type Candidate = { event: FingerprintEvent; display: string; explicitDirection: 'IN' | 'OUT' | null; validTimestamp: boolean }
-  const groups = new Map<string, { employeeNumber: string | null; name: string; byDate: Map<string, Candidate[]>; invalidDates: Set<string> }>()
+  const groups = new Map<string, { employeeNumber: string | null; name: string; nameCounts: Map<string, number>; byDate: Map<string, Candidate[]>; invalidDates: Set<string> }>()
   for (const item of evidence) {
     if (!item.date || !dates.includes(item.date)) continue
     const number = normalizeEmployeeNumber(item.employeeNumber)
     const normalizedName = normalizeEmployeeName(item.employeeName)
     if (!number && !normalizedName) continue
     const identity = number ? `id:${number}` : `name:${normalizedName}`
-    const group = groups.get(identity) ?? { employeeNumber: item.employeeNumber, name: item.employeeName ?? '', byDate: new Map<string, Candidate[]>(), invalidDates: new Set<string>() }
-    if (!group.name && item.employeeName) group.name = item.employeeName
+    const group = groups.get(identity) ?? { employeeNumber: item.employeeNumber, name: '', nameCounts: new Map<string, number>(), byDate: new Map<string, Candidate[]>(), invalidDates: new Set<string>() }
+    // Keep the name as supplied by the source. When one ID has minor PDF line
+    // wrap variants across its event rows, use the most frequently extracted
+    // source spelling (longer source spelling breaks ties); never construct a
+    // name from roster data or normalized matching text.
+    if (item.employeeName?.trim()) {
+      const sourceName = item.employeeName.trim()
+      const count = (group.nameCounts.get(sourceName) ?? 0) + 1
+      group.nameCounts.set(sourceName, count)
+      const selectedCount = group.nameCounts.get(group.name) ?? 0
+      if (count > selectedCount || (count === selectedCount && sourceName.length > group.name.length)) group.name = sourceName
+    }
     groups.set(identity, group)
     if (!item.date || !dates.includes(item.date)) continue
     const candidates: Candidate[] = []
@@ -96,6 +106,7 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     groups.set(identity, {
       employeeNumber: employee.employeeNumber,
       name: employee.fullName,
+      nameCounts: new Map(),
       byDate: new Map(),
       invalidDates: new Set(),
     })
@@ -119,7 +130,10 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
       const inTime = incoming[0]?.display ?? null
       const outTime = outgoing.at(-1)?.display ?? null
       const noSideCanBeAssigned = unresolvedNoon && incoming.length === 0 && outgoing.length === 0
-      const usableRule = Boolean(dateRule && dateRule.timezone === 'Africa/Kigali')
+      // The organization has approved these thresholds as its active policy.
+      // Use them for the presentation grid when no versioned DB rule is
+      // available; a present rule in a different timezone remains unverified.
+      const usableRule = !dateRule || dateRule.timezone === 'Africa/Kigali'
       const latestOut = outgoing.at(-1)
       const lastOutClock = latestOut?.validTimestamp ? formatKigaliClock(latestOut.event.timestamp) : null
       const reachedOvertimeThreshold = Boolean(lastOutClock && lastOutClock >= (dateRule?.overtimeFrom ?? DEFAULT_ATTENDANCE_RULES.overtimeFrom))

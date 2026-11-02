@@ -4,7 +4,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { normalizeEmployeeName, normalizeEmployeeNumber, parseSourceDateTime } from './time'
 import type { ImportWarning, ParsedAttendanceImport, PdfAttendanceRecord } from './types'
 
-export type PositionedText = { text: string; x: number; y: number }
+export type PositionedText = { text: string; x: number; y: number; width?: number }
 const FIELD_LABELS = [
   'person id', 'name', 'department', 'time', 'attendance status',
   'attendance check point', 'custom name', 'data source', 'handling type', 'temperature', 'abnormal',
@@ -27,6 +27,27 @@ function columnIndex(x: number, starts: number[]): number {
     if (x < (starts[i] + starts[i + 1]) / 2) return i
   }
   return starts.length - 1
+}
+
+/** Join PDF.js text fragments without inserting spaces inside printed names. */
+function joinPositionedRuns(items: PositionedText[]): string {
+  const sorted = [...items].sort((a, b) => a.x - b.x)
+  let output = ''
+  let previous: PositionedText | undefined
+  for (const item of sorted) {
+    const text = item.text.trim()
+    if (!text) continue
+    if (previous && output) {
+      const previousText = previous.text.trim()
+      const previousWidth = previous.width ?? previousText.length * 3
+      const gap = item.x - (previous.x + previousWidth)
+      const averageGlyphWidth = previousWidth / Math.max(previousText.length, 1)
+      if (gap > Math.max(2.5, averageGlyphWidth * 0.45) && !output.endsWith(' ') && !text.startsWith(' ')) output += ' '
+    }
+    output += text
+    previous = item
+  }
+  return output
 }
 
 function normalizedIdentity(employeeNumber: string | null, employeeName: string | null, index: number) {
@@ -71,7 +92,7 @@ export function parseIvmsPageItems(items: PositionedText[], page: number, source
         const lineY = Math.round(item.y * 2) / 2
         byLine.set(lineY, [...(byLine.get(lineY) ?? []), item])
       }
-      return [...byLine.entries()].sort((a, b) => b[0] - a[0]).map(([, line]) => line.sort((a, b) => a.x - b.x).map((item) => item.text.trim()).filter(Boolean).join(' ')).filter(Boolean).join(' ')
+      return [...byLine.entries()].sort((a, b) => b[0] - a[0]).map(([, line]) => joinPositionedRuns(line)).filter(Boolean).join(' ')
     })
     if (cells.every((value) => !value)) continue
     sourceIndex += 1
@@ -138,7 +159,7 @@ export async function parseIvmsPdf(bytes: Uint8Array): Promise<ParsedAttendanceI
       const content = await page.getTextContent()
       const positioned: PositionedText[] = content.items.flatMap((item) => {
         if (!('str' in item) || !item.str.trim() || !('transform' in item)) return []
-        return [{ text: item.str, x: item.transform[4], y: item.transform[5] }]
+        return [{ text: item.str, x: item.transform[4], y: item.transform[5], width: item.width }]
       })
       const result = parseIvmsPageItems(positioned, pageNumber, records.length, layout)
       foundReportHeader ||= result.hasHeader

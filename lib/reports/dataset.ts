@@ -1,4 +1,4 @@
-import { DEFAULT_ATTENDANCE_RULES, inferFingerprintDirection, processAttendanceEvents, type AttendanceRules, type FingerprintEvent } from '../attendance-engine'
+import { DEFAULT_ATTENDANCE_RULES, inferFingerprintDirection, type FingerprintEvent } from '../attendance-engine'
 import { normalizeEmployeeName, normalizeEmployeeNumber, parseSourceDateTime } from '../imports/time'
 import type { AttendanceReport, ManualAttendanceRow, ReportCalculation, ReportCorrection, ReportDayCell, ReportEmployee, ReportEvidence, ReportException, ReportImport, ReportReviewItem, ReportRule } from './types'
 
@@ -47,19 +47,6 @@ function formatKigaliClock(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
   return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(date)
-}
-
-function toEngineRules(rule: ReportRule | undefined): AttendanceRules {
-  if (!rule || rule.timezone !== 'Africa/Kigali') return DEFAULT_ATTENDANCE_RULES
-  return {
-    normalStart: rule.normalStart,
-    graceUntil: rule.graceUntil,
-    veryLateFrom: rule.veryLateFrom,
-    scheduledEnd: rule.scheduledEnd,
-    overtimeFrom: rule.overtimeFrom,
-    weekendOvertimeDays: rule.weekendOvertimeDays,
-    version: rule.version,
-  }
 }
 
 function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[], employees: ReportEmployee[]): ManualAttendanceRow[] {
@@ -126,7 +113,6 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
         return { date, inTime: null, outTime: null, inStatus: status, outStatus: status, hasEvidence: false }
       }
       const dateRule = rules.filter((rule) => rule.effectiveFrom <= date).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom) || a.version - b.version).at(-1)
-      const result = processAttendanceEvents(candidates.map((candidate) => candidate.event), toEngineRules(dateRule))[0]
       const incoming = candidates.filter((candidate) => candidate.explicitDirection === 'IN' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === 'IN')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
       const outgoing = candidates.filter((candidate) => candidate.explicitDirection === 'OUT' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === 'OUT')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
       const unresolvedNoon = candidates.some((candidate) => candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === null)
@@ -140,16 +126,26 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
       const weekendPolicyMissing = isRestDay && reachedOvertimeThreshold && (dateRule?.timezone !== 'Africa/Kigali' || dateRule.weekendOvertimeDays == null)
       const inNeedsReview = noSideCanBeAssigned || Boolean(incoming[0] && !incoming[0].validTimestamp)
       const outNeedsReview = noSideCanBeAssigned || Boolean(outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) || weekendPolicyMissing
+      const arrivalClock = incoming[0]?.validTimestamp ? formatKigaliClock(incoming[0].event.timestamp) : null
+      const [arrivalHour, arrivalMinute] = (arrivalClock ?? '').split(':').map(Number)
+      const arrivalMinutes = arrivalHour * 60 + arrivalMinute
+      const lateFrom = dateRule?.graceUntil ?? DEFAULT_ATTENDANCE_RULES.graceUntil
+      const veryLateFrom = dateRule?.veryLateFrom ?? DEFAULT_ATTENDANCE_RULES.veryLateFrom
+      const lateMinutes = Number(lateFrom.slice(0, 2)) * 60 + Number(lateFrom.slice(3, 5))
+      const veryLateMinutes = Number(veryLateFrom.slice(0, 2)) * 60 + Number(veryLateFrom.slice(3, 5))
+      const arrivalStatus = arrivalMinutes >= veryLateMinutes ? 'very_late' : arrivalMinutes >= lateMinutes ? 'late' : 'normal'
+      const weekendName = weekday as 'Saturday' | 'Sunday'
+      const weekendOvertimeAllowed = dateRule?.weekendOvertimeDays?.includes(weekendName) ?? false
+      const overtimeStatus = reachedOvertimeThreshold && (!isRestDay || weekendOvertimeAllowed)
       const inStatus: ManualAttendanceRow['days'][number]['inStatus'] = inNeedsReview ? 'review'
         : isRestDay ? inTime ? 'normal' : 'blank'
           : Boolean(inTime) && !usableRule ? 'review'
             : !inTime ? 'absent'
-              : result?.arrivalClassification === 'very_late' ? 'very_late'
-                : result?.arrivalClassification === 'late' ? 'late' : 'normal'
+              : arrivalStatus
       const outStatus: ManualAttendanceRow['days'][number]['outStatus'] = outNeedsReview ? 'review'
-        : isRestDay ? !outTime ? 'blank' : result?.overtimeEvidence ? 'overtime' : 'normal'
+        : isRestDay ? !outTime ? 'blank' : overtimeStatus ? 'overtime' : 'normal'
           : Boolean(outTime) && !usableRule ? 'review'
-            : !outTime ? 'absent' : result?.overtimeEvidence ? 'overtime' : 'normal'
+            : !outTime ? 'absent' : overtimeStatus ? 'overtime' : 'normal'
       if (inStatus === 'absent') absentCount++
       if (outStatus === 'absent') absentCount++
       return { date, inTime, outTime, inStatus, outStatus, hasEvidence: true }

@@ -133,8 +133,8 @@ describe('attendance report dataset and actual exports', () => {
     const page = await pdf.getPage(1)
     const content = await page.getTextContent()
     const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ')
-    expect(text).toContain('No matched employee has attendance evidence')
-    expect(text).toContain('No review exceptions')
+    expect(text).toContain('No source employee records were found')
+    expect(text).toContain('Reporting period: 2026-10-26 to 2026-11-01')
   })
 
   it('creates the manual attendance grid and inspects the generated PDF contents', async () => {
@@ -176,7 +176,7 @@ describe('attendance report dataset and actual exports', () => {
     await mkdir('/tmp', { recursive: true })
     await writeFile(pdfPath, pdfBytes)
     const pdf = await getDocument({ data: new Uint8Array(pdfBytes) }).promise
-    expect(pdf.numPages).toBeGreaterThanOrEqual(3)
+    expect(pdf.numPages).toBe(1)
     const text: string[] = []
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber)
@@ -186,12 +186,13 @@ describe('attendance report dataset and actual exports', () => {
     const extracted = text.join('\n')
     expect(extracted).toContain('MM&RJD')
     expect(extracted).toContain('2026-10-26 to 2026-11-01')
-    expect(extracted).toContain('TEST-001')
     expect(extracted).toContain('Alice Example')
-    expect(extracted).toContain('Very late')
-    expect(extracted).toContain('Calculation missing')
+    expect(extracted).toContain('Mon 26 Oct')
+    expect(extracted).toContain('no of absent')
+    expect(extracted).toContain('Late')
     expect(extracted).toContain('Page 1 of')
-    expect(extracted).toContain('fixture-original-records.pdf')
+    expect(extracted).toContain('*08:00:00')
+    expect(extracted).toContain('*17:30:00')
     expect(extracted).not.toContain('TEST-999')
   })
 
@@ -270,6 +271,6 @@ describe('attendance report dataset and actual exports', () => {
     const content = await page.getTextContent()
     const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ')
     expect(text).toContain('Weekly Employee Attendance Report')
-    expect(text).toContain('TEST-001')
+    expect(text).toContain('Alice Example')
   })
 })

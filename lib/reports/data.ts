@@ -114,6 +114,15 @@ export async function loadAttendanceReportInput(from: string, to: string, import
     calculationIds.length ? Promise.all(chunks(calculationIds).map((ids) => fetchAll((startAt, endAt) => supabase.from('attendance_corrections').select('id, daily_calculation_id, correction_type, reason, corrected_by, corrected_at').in('daily_calculation_id', ids).range(startAt, endAt)))).then((pages) => pages.flat()) : [],
   ])
 
+  const { data: latestAnalysisRun, error: analysisRunError } = await supabase.from('attendance_analysis_runs')
+    .select('id').eq('import_id', importId).eq('status', 'completed').order('started_at', { ascending: false }).limit(1).maybeSingle()
+  if (analysisRunError) throw new Error('Attendance review analysis could not be checked for report validation.')
+  const analysisFindings = latestAnalysisRun
+    ? await fetchAll((startAt, endAt) => supabase.from('attendance_review_findings')
+        .select('id, import_id, category, evidence_class, explanation, source_references, status')
+        .eq('analysis_run_id', latestAnalysisRun.id).range(startAt, endAt))
+    : []
+
   const rawMatches = new Map(rawMatchRows.map((row) => [row.raw_fingerprint_event_id, row.employee_id]))
   const organizedMatches = new Map(organizedMatchRows.map((row) => [row.organized_attendance_entry_id, row.employee_id]))
   const calculationEvidence = new Map<string, string[]>()
@@ -140,7 +149,27 @@ export async function loadAttendanceReportInput(from: string, to: string, import
     const engineVersion = result && typeof result === 'object' && !Array.isArray(result) && typeof result.engineVersion === 'number' ? result.engineVersion : null
     return { id: row.id, employeeId: row.employee_id!, date: row.attendance_date, version: row.calculation_version, rulesVersionId: row.rules_version_id, firstRecordedAt: row.first_recorded_at, lastRecordedAt: row.last_recorded_at, recordedEventCount: row.recorded_event_count, arrivalClassification: row.arrival_classification, overtimeEvidence: row.overtime_evidence, weekend: row.is_weekend, completeness: row.completeness, calculatedAt: row.calculated_at, engineVersion, evidenceIds: calculationEvidence.get(row.id) ?? [], correctionCount: correctionRows.filter((correction) => correction.daily_calculation_id === row.id).length }
   })
-  const reviews: ReportReviewItem[] = reviewRows.map((row) => ({ id: row.id, importId: row.import_id, evidenceId: row.raw_fingerprint_event_id ?? row.organized_attendance_entry_id, issueCode: row.issue_code, severity: row.severity, description: row.description, status: row.status }))
+  const reviews: ReportReviewItem[] = [
+    ...reviewRows.map((row) => ({ id: row.id, importId: row.import_id, evidenceId: row.raw_fingerprint_event_id ?? row.organized_attendance_entry_id, issueCode: row.issue_code, severity: row.severity, description: row.description, status: row.status })),
+    ...analysisFindings.map((row) => {
+      const references = row.source_references && typeof row.source_references === 'object' && !Array.isArray(row.source_references) ? row.source_references : {}
+      const sourceRecords = 'records' in references && Array.isArray(references.records) ? references.records : []
+      const selectedSource = sourceRecords.find((source) => source && typeof source === 'object' && !Array.isArray(source)
+        && 'importId' in source && source.importId === importId
+        && 'date' in source && typeof source.date === 'string' && source.date >= from && source.date <= to)
+      const evidenceId = selectedSource && typeof selectedSource === 'object' && !Array.isArray(selectedSource) && 'evidenceId' in selectedSource && typeof selectedSource.evidenceId === 'string' ? selectedSource.evidenceId : null
+      const needsDisclosure = !['rejected', 'corrected', 'superseded'].includes(row.status)
+      return {
+        id: row.id,
+        importId: row.import_id,
+        evidenceId,
+        issueCode: row.category,
+        severity: row.evidence_class === 'confirmed_inconsistency' ? 'error' as const : row.evidence_class === 'potential_inconsistency' ? 'warning' as const : 'info' as const,
+        description: row.explanation,
+        status: needsDisclosure ? 'open' as const : row.status === 'rejected' ? 'dismissed' as const : 'resolved' as const,
+      }
+    }),
+  ]
   const imports: ReportImport[] = [{ id: selectedImport.id, filename: selectedImport.original_filename, sourceType: selectedImport.source_type, uploadedAt: selectedImport.uploaded_at, checksum: selectedImport.sha256_checksum }]
   const employeesById = new Map(inputEmployees.map((employee) => [employee.id, employee]))
   const calculationsById = new Map(calculations.map((calculation) => [calculation.id, calculation]))

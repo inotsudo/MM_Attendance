@@ -6,6 +6,7 @@ export type ImportProcessingStatus = 'uploaded' | 'queued' | 'processing' | 'par
 export type EmployeeMatchMethod = 'employee_number' | 'exact_name' | 'manual'
 export type EmployeeMatchStatus = 'matched' | 'suggested' | 'unmatched' | 'rejected'
 export type ReviewItemStatus = 'open' | 'resolved' | 'dismissed'
+export type AttendanceReviewState = 'pending' | 'under_review' | 'confirmed' | 'corrected' | 'unresolved' | 'rejected'
 export type ArrivalClassification = 'before_start' | 'on_time' | 'late' | 'very_late' | 'no_event'
 export type CalculationCompleteness = 'complete_evidence' | 'incomplete_evidence' | 'no_events'
 
@@ -130,6 +131,9 @@ type AttendanceReviewItem = {
   issue_code: string
   severity: 'info' | 'warning' | 'error'
   status: ReviewItemStatus
+  review_state: AttendanceReviewState
+  reviewed_by: string | null
+  reviewed_at: string | null
   description: string
   evidence: Json
   resolution_note: string | null
@@ -146,7 +150,31 @@ type AttendanceCorrection = {
   reason: string
   corrected_by: string
   corrected_at: string
+  proposal_id: string | null
+  finding_id: string | null
+  rules_version_id: string | null
 }
+type AttendanceAnalysisRun = {
+  id: string; import_id: string; analyzed_by: string; status: string; period_from: string | null; period_to: string | null
+  source_record_count: number; summary: Json; error_message: string | null; started_at: string; completed_at: string | null
+}
+type AttendanceReviewFinding = {
+  id: string; analysis_run_id: string; import_id: string; employee_id: string | null; employee_number: string | null
+  employee_name: string | null; attendance_date: string | null; category: string
+  evidence_class: 'confirmed_inconsistency' | 'potential_inconsistency' | 'insufficient_evidence'
+  title: string; explanation: string; current_values: Json; source_references: Json; rules_version_id: string | null
+  calculation_id: string | null; status: string; decision_note: string | null; decided_by: string | null
+  decided_at: string | null; created_at: string
+}
+type AttendanceCorrectionProposal = {
+  id: string; finding_id: string; import_id: string; employee_id: string; attendance_date: string
+  current_calculation_id: string; rules_version_id: string; affected_field: string; previous_value: Json
+  proposed_value: Json; proposed_calculation: Json; source_references: Json; explanation: string; confidence: number
+  status: string; generated_at: string; decided_by: string | null; decided_at: string | null; decision_note: string | null
+  application_error: string | null; resulting_calculation_id: string | null
+}
+type AttendanceReviewDecision = { id: string; finding_id: string; proposal_id: string | null; action: string; reason: string; actor_user_id: string; created_at: string; details: Json }
+type AttendanceCalculationSupersession = { id: string; previous_calculation_id: string; replacement_calculation_id: string; proposal_id: string; superseded_by: string; superseded_at: string }
 type AuditHistory = {
   id: string
   actor_user_id: string | null
@@ -174,6 +202,11 @@ export type Database = {
       daily_attendance_evidence: Table<DailyAttendanceEvidence, 'daily_calculation_id'>
       attendance_review_items: Table<AttendanceReviewItem, 'import_id' | 'issue_code' | 'description'>
       attendance_corrections: Table<AttendanceCorrection, 'daily_calculation_id' | 'correction_type' | 'previous_values' | 'corrected_values' | 'reason' | 'corrected_by'>
+      attendance_analysis_runs: Table<AttendanceAnalysisRun, 'import_id' | 'analyzed_by'>
+      attendance_review_findings: Table<AttendanceReviewFinding, 'analysis_run_id' | 'import_id' | 'category' | 'evidence_class' | 'title' | 'explanation'>
+      attendance_correction_proposals: Table<AttendanceCorrectionProposal, 'finding_id' | 'import_id' | 'employee_id' | 'attendance_date' | 'current_calculation_id' | 'rules_version_id' | 'affected_field' | 'previous_value' | 'proposed_value' | 'proposed_calculation' | 'source_references' | 'explanation' | 'confidence'>
+      attendance_review_decisions: Table<AttendanceReviewDecision, 'finding_id' | 'action' | 'reason' | 'actor_user_id'>
+      attendance_calculation_supersessions: Table<AttendanceCalculationSupersession, 'previous_calculation_id' | 'replacement_calculation_id' | 'proposal_id' | 'superseded_by'>
       audit_history: Table<AuditHistory, 'action' | 'target_table'>
     }
     Views: Record<string, never>
@@ -187,6 +220,17 @@ export type Database = {
         Args: { p_review_item_id: string; p_resolution_note: string; p_employee_id?: string | null }
         Returns: Json
       }
+      update_attendance_review_item: {
+        Args: { p_review_item_id: string; p_next_state: AttendanceReviewState; p_note: string; p_employee_id?: string | null }
+        Returns: Json
+      }
+      persist_attendance_analysis: {
+        Args: { p_import_id: string; p_period_from: string | null; p_period_to: string | null; p_source_record_count: number; p_summary: Json; p_findings: Json }
+        Returns: Json
+      }
+      decide_attendance_finding: { Args: { p_finding_id: string; p_action: string; p_reason: string }; Returns: Json }
+      apply_attendance_correction_proposal: { Args: { p_proposal_id: string }; Returns: Json }
+      mark_attendance_proposal_application_failed: { Args: { p_proposal_id: string; p_error: string }; Returns: undefined }
     }
     Enums: {
       app_role: AppRole

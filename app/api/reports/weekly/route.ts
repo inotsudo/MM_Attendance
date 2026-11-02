@@ -48,6 +48,11 @@ export async function GET(request: Request) {
     if (report.diagnostics.matchedEmployees > 0 && report.diagnostics.employeesIncluded === 0) {
       throw new Error('The selected import has matched attendance records, but none of the matched employees are available in the active employee roster. Review employee status and matching before exporting.')
     }
+    const reportValidation = report.diagnostics.reviewExceptions === 0
+      ? 'ready_for_export'
+      : report.diagnostics.calculatedEmployeeDays === 0
+        ? 'requires_review'
+        : 'ready_with_disclosed_issues'
     const period = `${from}-to-${to}`
     if (format === 'xlsx') {
       const bytes = await createAttendanceWorkbook(report)
@@ -60,6 +65,8 @@ export async function GET(request: Request) {
           'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),
           'X-Report-Employees': String(report.diagnostics.employeesIncluded),
           'X-Report-Calculated-Days': String(report.diagnostics.calculatedEmployeeDays),
+          'X-Report-Validation': reportValidation,
+          'X-Report-Exceptions': String(report.diagnostics.reviewExceptions),
         },
       })
     }
@@ -73,6 +80,8 @@ export async function GET(request: Request) {
         'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),
         'X-Report-Employees': String(report.diagnostics.employeesIncluded),
         'X-Report-Calculated-Days': String(report.diagnostics.calculatedEmployeeDays),
+        'X-Report-Validation': reportValidation,
+        'X-Report-Exceptions': String(report.diagnostics.reviewExceptions),
       },
     })
   } catch (error) {

@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, CheckCircle2, ChevronDown, CircleHelp, FileBarChart, FileCheck2, FileSpreadsheet, FileText, Fingerprint, LayoutDashboard, Menu, Search, Settings, SlidersHorizontal, Upload, Users, X } from 'lucide-react'
-import { processAttendanceEvents } from '@/lib/attendance-engine'
+import { DEFAULT_ATTENDANCE_RULES, processAttendanceEvents } from '@/lib/attendance-engine'
 import type { EmployeeOption, IdentityMatch, ImportWarning, PdfAttendanceRecord, ExcelAttendanceRecord } from '@/lib/imports/types'
+import { IntelligentReview } from './intelligent-review'
 
 const navItems = [
   { label: 'Dashboard', icon: LayoutDashboard },
@@ -30,13 +31,46 @@ type ImportPreview = {
 type OpenReviewItem = {
   id: string
   import_id: string
+  daily_calculation_id: string | null
   originalFilename: string
   issue_code: string
   severity: 'info' | 'warning' | 'error'
+  review_state: 'pending' | 'under_review' | 'confirmed' | 'corrected' | 'unresolved' | 'rejected'
   description: string
   evidence: unknown
   rawEvent: { source_page: number | null; source_row: number | null; source_employee_number: string | null; source_employee_name: string | null; source_department: string | null; source_timestamp_text: string; source_status: string | null; checkpoint: string | null } | null
   organizedEntry: { source_sheet: string | null; source_row: number; source_employee_number: string | null; source_employee_name: string | null; source_work_date_text: string; source_in_text: string | null; source_out_text: string | null } | null
+}
+type ReviewCalculation = {
+  id: string
+  employee_id: string
+  attendance_date: string
+  calculation_version: number
+  first_recorded_at: string | null
+  last_recorded_at: string | null
+  arrival_classification: string
+  overtime_evidence: boolean
+  completeness: string
+  employeeNumber: string
+  employeeName: string
+  currentFirstRecordedAt: string | null
+  currentLastRecordedAt: string | null
+  hasCorrection: boolean
+}
+type ReviewPage = { offset: number; limit: number; hasMore: boolean }
+type CorrectionHistoryItem = {
+  id: string
+  daily_calculation_id: string
+  correction_type: string
+  previous_values: unknown
+  corrected_values: unknown
+  reason: string
+  corrected_by: string
+  correctedByName: string
+  corrected_at: string
+  attendanceDate: string | null
+  employeeNumber: string
+  employeeName: string
 }
 type ImportHistoryRow = {
   id: string
@@ -45,6 +79,20 @@ type ImportHistoryRow = {
   file_size_bytes: number
   uploaded_at: string
   processing_status: string
+}
+type AttendanceRuleRecord = {
+  id: string
+  version: number
+  attendance_timezone: string
+  effective_from: string
+  normal_start: string
+  grace_until: string
+  very_late_from: string
+  scheduled_end: string
+  overtime_from: string
+  policy: unknown
+  reason: string
+  created_at: string
 }
 
 function EmptyState({ icon: Icon, title, description, action, onAction }: { icon: typeof Users; title: string; description: string; action?: string; onAction?: () => void }) {
@@ -181,64 +229,148 @@ export function AttendanceApp() {
 function DashboardView({ onImport }: { onImport: () => void }) { return <><section className="overview-grid"><StatCard icon={<Users />} label="Employees matched" /><StatCard icon={<FileCheck2 />} label="Records imported" /><StatCard icon={<AlertTriangle />} label="Need review" /><StatCard icon={<FileBarChart />} label="Report status" value="Not generated" /></section><div className="dashboard-grid"><section className="panel upload-panel"><div className="panel-heading"><div><h2>Upload attendance file</h2><p>Import an iVMS-4200 export to get started.</p></div><Upload className="heading-icon" /></div><button className="empty-upload" onClick={onImport}><ArrowUpFromLine /><strong>No attendance files imported yet</strong><span>Choose an Excel or PDF export to begin.</span></button></section><section className="panel weekly-panel"><div className="panel-heading"><div><h2>Weekly overview</h2><p>Attendance status for the selected period.</p></div><CalendarDays className="heading-icon" /></div><EmptyState icon={FileBarChart} title="No attendance data" description="Import a file to see weekly summaries." /></section></div><section className="panel activity-panel"><div className="panel-heading"><div><h2>Recent attendance activity</h2><p>Processed records will appear here.</p></div></div><EmptyState icon={CalendarDays} title="No activity yet" description="There are no persisted attendance records." /></section></> }
 function StatCard({ icon, label, value = '—', caption = 'No data available' }: { icon: React.ReactNode; label: string; value?: string; caption?: string }) { return <article className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{caption}</small></article> }
 
+function kigaliClock(value: string | null) {
+  if (!value) return ''
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value))
+}
+
+function correctionValueTimes(value: unknown): { firstRecordedAt: string | null; lastRecordedAt: string | null } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { firstRecordedAt: null, lastRecordedAt: null }
+  const values = value as { firstRecordedAt?: unknown; lastRecordedAt?: unknown }
+  return {
+    firstRecordedAt: typeof values.firstRecordedAt === 'string' ? values.firstRecordedAt : null,
+    lastRecordedAt: typeof values.lastRecordedAt === 'string' ? values.lastRecordedAt : null,
+  }
+}
+
+function reviewIssueTitle(code: string) {
+  const labels: Record<string, string> = {
+    unmatched_employee: 'Employee not matched',
+    conflicting_employee: 'Employee details conflict',
+    missing_employee_id: 'Employee ID missing',
+    invalid_timestamp: 'Date or time needs review',
+    duplicate_event: 'Possible duplicate fingerprint event',
+    single_event: 'Only one fingerprint event recorded',
+    missing_in: 'Arrival time missing',
+    missing_out: 'Departure time missing',
+    direction_unknown: 'Fingerprint direction needs review',
+    attendance_rules_missing: 'Attendance rules not configured',
+    attendance_rules_unavailable: 'Attendance rules unavailable',
+  }
+  return labels[code] ?? code.replaceAll('_', ' ')
+}
+
 function ReviewView() {
   const [items, setItems] = useState<OpenReviewItem[]>([])
   const [employees, setEmployees] = useState<EmployeeOption[]>([])
-  const [drafts, setDrafts] = useState<Record<string, { note: string; employeeId: string }>>({})
-  const [loading, setLoading] = useState(true)
+  const [corrections, setCorrections] = useState<CorrectionHistoryItem[]>([])
+  const [itemsPage, setItemsPage] = useState<ReviewPage>({ offset: 0, limit: 50, hasMore: false })
+  const [historyPage, setHistoryPage] = useState<ReviewPage>({ offset: 0, limit: 25, hasMore: false })
+  const [drafts, setDrafts] = useState<Record<string, { note: string; employeeId: string; reviewState: string }>>({})
+  const [stateFilter, setStateFilter] = useState('active')
+  const [savingReviewId, setSavingReviewId] = useState<string | null>(null)
+  const [queueLoading, setQueueLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
-  async function refresh() {
-    setLoading(true)
+  async function refreshItems(offset = 0, append = false) {
+    setQueueLoading(true)
     try {
-      const response = await fetch('/api/reviews')
+      const response = await fetch(`/api/reviews?offset=${offset}&limit=50&state=${stateFilter}&includeEmployees=${offset === 0}`, { cache: 'no-store' })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error ?? 'Review items could not be loaded.')
-      setItems(result.items)
-      setEmployees(result.employees)
+      setItems((current) => append ? [...current, ...(result.items ?? [])] : (result.items ?? []))
+      if (offset === 0) setEmployees(result.employees ?? [])
+      setItemsPage(result.page)
       setError(null)
     } catch (issue) {
       setError(issue instanceof Error ? issue.message : 'Review items could not be loaded.')
-    } finally { setLoading(false) }
+    } finally { setQueueLoading(false) }
   }
 
-  useEffect(() => { void refresh() }, [])
+  async function refreshHistory(offset = 0, append = false) {
+    setHistoryLoading(true)
+    setHistoryLoaded(true)
+    try {
+      const response = await fetch(`/api/reviews/corrections?view=history&offset=${offset}&limit=25`, { cache: 'no-store' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? 'Attendance correction history could not be loaded.')
+      setCorrections((current) => append ? [...current, ...(result.corrections ?? [])] : (result.corrections ?? []))
+      setHistoryPage(result.page)
+      setError(null)
+    } catch (issue) {
+      setError(issue instanceof Error ? issue.message : 'Attendance correction history could not be loaded.')
+    } finally { setHistoryLoading(false) }
+  }
+
+  useEffect(() => {
+    void refreshItems()
+  }, [stateFilter])
 
   async function resolve(item: OpenReviewItem) {
     const draft = drafts[item.id]
-    if (!draft?.note.trim()) { setError('Add a resolution note before resolving a review item.'); return }
+    if (!draft?.note.trim()) { setError('Add a short note explaining the decision.'); return }
+    setSavingReviewId(item.id)
     try {
       const response = await fetch(`/api/reviews/${item.id}/resolve`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: draft.note, employeeId: draft.employeeId || null }),
+        body: JSON.stringify({ note: draft.note, employeeId: draft.employeeId || null, reviewState: draft.reviewState || 'under_review' }),
       })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error ?? 'Review item could not be resolved.')
-      await refresh()
+      setNotice(result.alreadyUpdated ? 'This review item was already updated.' : result.requiresReprocessing ? 'Employee match saved. This item stays open until attendance is recalculated from the matched source evidence.' : 'Review decision saved to the audit history.')
+      await refreshItems()
     } catch (issue) { setError(issue instanceof Error ? issue.message : 'Review item could not be resolved.') }
+    finally { setSavingReviewId(null) }
   }
 
   return <section className="panel review-page">
-    <div className="panel-heading"><div><h2>Open attendance review items</h2><p>Review source evidence, document your decision, and optionally assign an employee match.</p></div><CircleHelp className="heading-icon" /></div>
+    <div className="panel-heading"><div><h2>Reviews &amp; corrections</h2><p>Resolve attendance questions and keep a clear record of each decision.</p></div><CircleHelp className="heading-icon" /></div>
     {error && <p role="alert" className="form-notice">{error}</p>}
-    {loading ? <p className="subtitle">Loading persisted review items…</p> : items.length === 0 ? <EmptyState icon={CircleHelp} title="No records require review" description="There are no open persisted attendance review items." /> : <div className="review-list">{items.map((item) => {
-      const draft = drafts[item.id] ?? { note: '', employeeId: '' }
+    {notice && <p role="status" className="form-notice">{notice}</p>}
+    <IntelligentReview />
+    <details className="review-secondary"><summary>Import validation notes</summary>
+    <div className="filters"><label className="field-label">Show<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setItems([]); }}><option value="active">Open items</option><option value="pending">Needs review</option><option value="under_review">In progress</option><option value="unresolved">Unresolved</option><option value="confirmed">Confirmed</option><option value="corrected">Corrected</option><option value="rejected">Rejected</option><option value="all">All items</option></select></label></div>
+    {queueLoading && items.length === 0 ? <p className="subtitle">Loading persisted review items…</p> : items.length === 0 ? <EmptyState icon={CircleHelp} title="No records require review" description="There are no open persisted attendance review items." /> : <div className="review-list">{items.map((item) => {
+      const draft = drafts[item.id] ?? { note: '', employeeId: '', reviewState: 'under_review' }
       const source = item.rawEvent ?? item.organizedEntry
       const canMatch = ['unmatched_employee', 'conflicting_employee', 'missing_employee_id'].includes(item.issue_code) && Boolean(item.rawEvent || item.organizedEntry)
       const sourceId = item.rawEvent?.source_employee_number ?? item.organizedEntry?.source_employee_number
       const sourceName = item.rawEvent?.source_employee_name ?? item.organizedEntry?.source_employee_name
       return <article className="review-card" key={item.id}>
-        <div className="review-card-heading"><strong>{item.issue_code.replaceAll('_', ' ')}</strong><span className={`review-severity ${item.severity}`}>{item.severity}</span></div>
+        <div className="review-card-heading"><strong>{reviewIssueTitle(item.issue_code)}</strong><span className={`review-severity ${item.severity}`}>{item.review_state.replaceAll('_', ' ')}</span></div>
         <p>{item.description}</p>
-        <p className="subtitle">{item.originalFilename} · Employee ID: {sourceId ?? 'Missing'} · Name: {sourceName ?? 'Missing'}</p>
-        {item.rawEvent && <p className="review-source">PDF page {item.rawEvent.source_page ?? '—'} row {item.rawEvent.source_row ?? '—'} · {item.rawEvent.source_timestamp_text} · {item.rawEvent.source_status ?? 'No status'} · {item.rawEvent.checkpoint ?? 'No checkpoint'}</p>}
-        {item.organizedEntry && <p className="review-source">{item.organizedEntry.source_sheet} row {item.organizedEntry.source_row} · {item.organizedEntry.source_work_date_text} · IN {item.organizedEntry.source_in_text ?? 'blank'} · OUT {item.organizedEntry.source_out_text ?? 'blank'}</p>}
-        {!source && item.evidence !== null && item.evidence !== undefined && <pre className="review-source">{JSON.stringify(item.evidence, null, 2)}</pre>}
-        <label className="field-label">Resolution note<textarea rows={2} value={draft.note} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, note: event.target.value } }))} placeholder="Explain the review decision" /></label>
-        {canMatch && <label className="field-label">Assign employee (optional)<select value={draft.employeeId} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, employeeId: event.target.value } }))}><option value="">Leave unmatched</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNumber} · {employee.fullName}</option>)}</select></label>}
-        <button className="button secondary" disabled={!draft.note.trim()} onClick={() => void resolve(item)}>Resolve review item</button>
+        <p className="subtitle">{sourceName ?? 'Employee not identified'}{sourceId ? ` · ID ${sourceId}` : ''}</p>
+        <details className="review-evidence"><summary>View source details</summary><p className="review-source">{item.originalFilename}{item.rawEvent ? ` · Page ${item.rawEvent.source_page ?? '—'}, row ${item.rawEvent.source_row ?? '—'} · ${item.rawEvent.source_timestamp_text}` : ''}{item.organizedEntry ? ` · ${item.organizedEntry.source_sheet ?? 'Workbook'} · ${item.organizedEntry.source_work_date_text} · IN ${item.organizedEntry.source_in_text ?? 'blank'} · OUT ${item.organizedEntry.source_out_text ?? 'blank'}` : ''}</p></details>
+        <label className="field-label">Decision<select value={draft.reviewState} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, reviewState: event.target.value } }))}><option value="under_review">Mark in progress</option><option value="confirmed">Confirm</option><option value="unresolved">Needs follow-up</option><option value="rejected">Reject item</option><option value="pending">Return to queue</option></select></label>
+        {canMatch && <label className="field-label">Employee match<select value={draft.employeeId} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, employeeId: event.target.value, reviewState: event.target.value ? 'confirmed' : 'under_review' } }))}><option value="">No match selected</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNumber} · {employee.fullName}</option>)}</select></label>}
+        <label className="field-label">Note<textarea rows={2} value={draft.note} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...draft, note: event.target.value } }))} placeholder="Briefly explain the decision" /></label>
+        <button className="button secondary" disabled={!draft.note.trim() || savingReviewId === item.id} onClick={() => void resolve(item)}>{savingReviewId === item.id ? 'Saving…' : 'Save decision'}</button>
       </article>
     })}</div>}
+    {!queueLoading && <p className="subtitle">Showing {items.length} open review items{itemsPage.hasMore ? ' loaded; more are available.' : ' total.'}</p>}
+    {itemsPage.hasMore && <button className="button secondary" disabled={queueLoading} onClick={() => void refreshItems(items.length, true)}>{queueLoading ? 'Loading review items…' : 'Load more review items'}</button>}
+    </details>
+    <details className="review-secondary">
+      <summary>Correction history</summary>
+      <div className="panel-heading"><div><h2>Correction history</h2><p>Actions are loaded in pages so the full audit history remains available.</p></div></div>
+      {!historyLoaded ? <button className="button secondary" disabled={historyLoading} onClick={() => void refreshHistory()}>{historyLoading ? 'Loading history…' : 'Load correction history'}</button> : historyLoading && corrections.length === 0 ? <p className="subtitle">Loading correction history…</p> : corrections.length === 0 ? <p className="subtitle">No attendance corrections have been recorded.</p> : <div className="review-list">{corrections.map((correction) => {
+        const before = correctionValueTimes(correction.previous_values)
+        const after = correctionValueTimes(correction.corrected_values)
+        const beforeClass = correction.previous_values && typeof correction.previous_values === 'object' && 'value' in correction.previous_values ? String(correction.previous_values.value) : null
+        const afterClass = correction.corrected_values && typeof correction.corrected_values === 'object' && 'value' in correction.corrected_values ? String(correction.corrected_values.value) : null
+        return <article className="review-card" key={correction.id}>
+          <div className="review-card-heading"><strong>{correction.employeeName} · {correction.attendanceDate ?? 'Date unavailable'}</strong><span className="review-severity warning">{correction.correction_type.replaceAll('_', ' ')}</span></div>
+          <p className="review-source">{beforeClass !== null && afterClass !== null ? `Arrival classification: ${beforeClass.replaceAll('_', ' ')} → ${afterClass.replaceAll('_', ' ')}` : `Before: IN ${kigaliClock(before.firstRecordedAt) || 'Missing'} / OUT ${kigaliClock(before.lastRecordedAt) || 'Missing'} · After: IN ${kigaliClock(after.firstRecordedAt) || 'Missing'} / OUT ${kigaliClock(after.lastRecordedAt) || 'Missing'}`}</p>
+          <p>{correction.reason}</p>
+          <p className="subtitle">Recorded by {correction.correctedByName} · {new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(correction.corrected_at))} (Africa/Kigali)</p>
+        </article>
+      })}</div>}
+      {historyLoaded && !historyLoading && <p className="subtitle">Showing {corrections.length} correction actions{historyPage.hasMore ? ' loaded; more are available.' : ' total.'}</p>}
+      {historyLoaded && historyPage.hasMore && <button className="button secondary" disabled={historyLoading} onClick={() => void refreshHistory(corrections.length, true)}>{historyLoading ? 'Loading history…' : 'Load more correction history'}</button>}
+    </details>
   </section>
 }
 
@@ -384,9 +516,13 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
       const sourceRecords = Number(response.headers.get('X-Report-Source-Records') ?? '0')
       const employees = Number(response.headers.get('X-Report-Employees') ?? '0')
       const calculatedDays = Number(response.headers.get('X-Report-Calculated-Days') ?? '0')
-      const message = sourceRecords === 0
+      const exceptions = Number(response.headers.get('X-Report-Exceptions') ?? '0')
+      const validation = response.headers.get('X-Report-Validation') ?? 'requires_review'
+      const validationLabel = validation === 'ready_for_export' ? 'Ready for export' : validation === 'ready_with_disclosed_issues' ? 'Ready with disclosed issues' : 'Requires review'
+      const contents = sourceRecords === 0
         ? 'No attendance records from the selected import fall within this reporting week. An explicitly empty report was generated.'
         : `${sourceRecords} source records, ${employees} matched employees, and ${calculatedDays} calculated employee-days included.`
+      const message = `${validationLabel} · ${exceptions} review exceptions · ${contents}`
       setDownload({ url, filename, generatedAt: new Date().toISOString(), message })
       const anchor = document.createElement('a')
       anchor.href = url
@@ -439,4 +575,157 @@ function addDays(value: string, days: number) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return ''
   return new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
 }
-function SettingsView() { return <section className="settings-grid"><section className="panel settings-card"><div className="panel-heading"><div><h2>Attendance rules</h2><p>Configure a draft policy for the future processing service.</p></div><SlidersHorizontal className="heading-icon" /></div>{[['Normal working start','08:00'],['Grace period ends','08:30'],['Very late from','09:30'],['Scheduled working end','17:30'],['Overtime evidence from','19:30']].map(([label, value]) => <label className="field-label" key={label}>{label}<input defaultValue={value} /></label>)}<button className="button secondary">Save rules draft</button><p className="form-notice">Draft controls are present for handoff only. Rules are not persisted.</p></section><section className="panel settings-card"><h2>Application settings</h2><p>Authentication and organization settings are not connected.</p><EmptyState icon={Settings} title="Settings unavailable" description="No persistent account or organization data is available." /></section></section> }
+function kigaliToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Kigali', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+}
+
+function weekendSetting(rule: AttendanceRuleRecord | undefined): { mode: string; days: Array<'Saturday' | 'Sunday'> } {
+  if (!rule || !rule.policy || typeof rule.policy !== 'object' || !('weekendOvertimeDays' in rule.policy)) return { mode: 'unconfigured', days: [] }
+  const days = (rule.policy as { weekendOvertimeDays?: unknown }).weekendOvertimeDays
+  if (!Array.isArray(days)) return { mode: 'unconfigured', days: [] }
+  const validDays = days.filter((day): day is 'Saturday' | 'Sunday' => day === 'Saturday' || day === 'Sunday')
+  return { mode: validDays.length ? 'configured' : 'none', days: validDays }
+}
+
+function SettingsView() {
+  const today = useMemo(kigaliToday, [])
+  const [rules, setRules] = useState<AttendanceRuleRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [form, setForm] = useState<{
+    normalStart: string
+    graceUntil: string
+    veryLateFrom: string
+    scheduledEnd: string
+    overtimeFrom: string
+    effectiveFrom: string
+    reason: string
+    weekendMode: string
+    weekendDays: Array<'Saturday' | 'Sunday'>
+  }>({
+    normalStart: DEFAULT_ATTENDANCE_RULES.normalStart,
+    graceUntil: DEFAULT_ATTENDANCE_RULES.graceUntil,
+    veryLateFrom: DEFAULT_ATTENDANCE_RULES.veryLateFrom,
+    scheduledEnd: DEFAULT_ATTENDANCE_RULES.scheduledEnd,
+    overtimeFrom: DEFAULT_ATTENDANCE_RULES.overtimeFrom,
+    effectiveFrom: today,
+    reason: '',
+    weekendMode: 'unconfigured',
+    weekendDays: [] as Array<'Saturday' | 'Sunday'>,
+  })
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/settings/attendance-rules', { cache: 'no-store' })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error ?? 'Attendance settings could not be loaded.')
+        if (!active) return
+        const records = (result.rules ?? []) as AttendanceRuleRecord[]
+        setRules(records)
+        const current = records.filter((rule) => rule.effective_from <= today).sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.version - a.version)[0]
+        if (current) {
+          const weekend = weekendSetting(current)
+          setForm((value) => ({
+            ...value,
+            normalStart: current.normal_start.slice(0, 5),
+            graceUntil: current.grace_until.slice(0, 5),
+            veryLateFrom: current.very_late_from.slice(0, 5),
+            scheduledEnd: current.scheduled_end.slice(0, 5),
+            overtimeFrom: current.overtime_from.slice(0, 5),
+            weekendMode: weekend.mode,
+            weekendDays: weekend.days,
+          }))
+        }
+        setError(null)
+      })
+      .catch((issue) => { if (active) setError(issue instanceof Error ? issue.message : 'Attendance settings could not be loaded.') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [today])
+
+  const activeRule = rules.filter((rule) => rule.effective_from <= today).sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.version - a.version)[0]
+  const pendingRules = rules.filter((rule) => rule.effective_from > today).sort((a, b) => a.effective_from.localeCompare(b.effective_from))
+
+  async function saveRules(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    setNotice(null)
+    const weekendOvertimeDays = form.weekendMode === 'unconfigured' ? null : form.weekendMode === 'none' ? [] : form.weekendDays
+    try {
+      const response = await fetch('/api/settings/attendance-rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          normalStart: form.normalStart,
+          graceUntil: form.graceUntil,
+          veryLateFrom: form.veryLateFrom,
+          scheduledEnd: form.scheduledEnd,
+          overtimeFrom: form.overtimeFrom,
+          effectiveFrom: form.effectiveFrom,
+          reason: form.reason,
+          weekendOvertimeDays,
+        }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? 'The new attendance rule version could not be saved.')
+      const saved = result.rule as AttendanceRuleRecord
+      setRules((previous) => [saved, ...previous.filter((rule) => rule.id !== saved.id)])
+      setForm((value) => ({ ...value, reason: '' }))
+      setNotice(`Rule version ${saved.version} saved. It takes effect ${saved.effective_from}; earlier versions remain in the audit history.`)
+    } catch (issue) {
+      setError(issue instanceof Error ? issue.message : 'The new attendance rule version could not be saved.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const changeTime = (key: 'normalStart' | 'graceUntil' | 'veryLateFrom' | 'scheduledEnd' | 'overtimeFrom', value: string) => setForm((current) => ({ ...current, [key]: value }))
+  const toggleWeekend = (day: 'Saturday' | 'Sunday') => setForm((current) => ({
+    ...current,
+    weekendMode: 'configured',
+    weekendDays: current.weekendDays.includes(day) ? current.weekendDays.filter((item) => item !== day) : [...current.weekendDays, day],
+  }))
+  const orderedTimes = [form.normalStart, form.graceUntil, form.veryLateFrom, form.scheduledEnd, form.overtimeFrom].map((value) => {
+    const [hour, minute] = value.split(':').map(Number)
+    return hour * 60 + minute
+  })
+  const timesValid = orderedTimes.every((value) => Number.isFinite(value)) && orderedTimes.every((value, index) => index === 0 || orderedTimes[index - 1] < value)
+
+  return <section className="settings-grid">
+    <section className="panel settings-card">
+      <div className="panel-heading"><div><h2>Attendance rules</h2><p>Each save creates an auditable rule version used by future processing.</p></div><SlidersHorizontal className="heading-icon" /></div>
+      {loading && <p className="form-notice">Loading saved attendance rules…</p>}
+      {error && <p role="alert" className="form-notice">{error}</p>}
+      {!loading && !activeRule && !error && <p className="form-notice">No attendance rule version is effective today. These values are defaults for the form only. Save a version before expecting imports to create calculated attendance.</p>}
+      {activeRule && <p className="form-notice">Active rule version {activeRule.version}, effective {activeRule.effective_from}. Updates are appended as new versions.</p>}
+      <form className="settings-card" onSubmit={saveRules}>
+        {([
+          ['normalStart', 'Normal working start'],
+          ['graceUntil', 'Late threshold'],
+          ['veryLateFrom', 'Very late threshold'],
+          ['scheduledEnd', 'Scheduled working end'],
+          ['overtimeFrom', 'Overtime threshold'],
+        ] as const).map(([key, label]) => <label className="field-label" key={key}>{label}<input type="time" step={60} required value={form[key]} onChange={(event) => changeTime(key, event.target.value)} /></label>)}
+        <label className="field-label">Effective from<input type="date" required value={form.effectiveFrom} onChange={(event) => setForm((current) => ({ ...current, effectiveFrom: event.target.value }))} /></label>
+        <label className="field-label">Reason for this rule version<input required minLength={5} maxLength={500} value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder="For example: HR approved the revised weekly attendance policy" /></label>
+        <label className="field-label">Weekend overtime policy<select value={form.weekendMode} onChange={(event) => setForm((current) => ({ ...current, weekendMode: event.target.value, weekendDays: event.target.value === 'configured' ? current.weekendDays : [] }))}><option value="unconfigured">Not configured (requires review)</option><option value="none">No weekend overtime</option><option value="configured">Overtime applies on selected days</option></select></label>
+        {form.weekendMode === 'configured' && <div className="report-options"><label><input type="checkbox" checked={form.weekendDays.includes('Saturday')} onChange={() => toggleWeekend('Saturday')} />Saturday</label><label><input type="checkbox" checked={form.weekendDays.includes('Sunday')} onChange={() => toggleWeekend('Sunday')} />Sunday</label></div>}
+        <button className="button primary" type="submit" disabled={loading || saving || !timesValid || form.reason.trim().length < 5 || (form.weekendMode === 'configured' && form.weekendDays.length === 0)}>{saving ? 'Saving rule version…' : 'Save new rule version'}</button>
+      </form>
+      {notice && <p role="status" className="form-notice">{notice}</p>}
+      {pendingRules.length > 0 && <div><h3>Scheduled versions</h3>{pendingRules.map((rule) => <p className="subtitle" key={rule.id}>Version {rule.version} · effective {rule.effective_from} · {rule.reason}</p>)}</div>}
+      {rules.length > 0 && <div><h3>Recent rule history</h3>{rules.slice(0, 5).map((rule) => <p className="subtitle" key={rule.id}>Version {rule.version} · {rule.effective_from} · {rule.normal_start.slice(0, 5)} / {rule.grace_until.slice(0, 5)} / {rule.very_late_from.slice(0, 5)} / {rule.scheduled_end.slice(0, 5)} / {rule.overtime_from.slice(0, 5)} · {rule.reason}</p>)}</div>}
+    </section>
+    <section className="panel settings-card">
+      <div className="panel-heading"><div><h2>Organization and access</h2><p>System settings currently defined for this workspace.</p></div><Settings className="heading-icon" /></div>
+      <div className="setting-row"><span><strong>Organization timezone</strong><small>Attendance dates and event grouping use this timezone.</small></span><strong>Africa/Kigali</strong></div>
+      <div className="setting-row"><span><strong>Application access</strong><small>Protected by Supabase Auth and administrator profile checks.</small></span><strong>Administrator</strong></div>
+      <div className="setting-row"><span><strong>Original attendance files</strong><small>Source imports are stored in the private attendance-originals bucket.</small></span><strong>Private</strong></div>
+      <p className="form-notice">These organization and access values are managed by the application configuration. They are shown here for reference and are not editable on this page.</p>
+    </section>
+  </section>
+}

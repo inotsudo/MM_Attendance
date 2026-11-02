@@ -36,6 +36,20 @@ function textValue(value: ExcelJS.CellValue): string | null {
   return String(cached).trim() || null
 }
 
+function sourceNameValue(value: ExcelJS.CellValue): string | null {
+  const cached = cachedValue(value)
+  if (cached == null || formulaResultMissing(value)) return null
+  if (cached instanceof Date) return cached.toISOString()
+  if (typeof cached === 'string') return cached.trim() ? cached : null
+  if (typeof cached === 'number' || typeof cached === 'boolean') return String(cached)
+  if ('richText' in cached) {
+    const text = cached.richText.map((part) => part.text).join('')
+    return text.trim() ? text : null
+  }
+  const text = String(cached)
+  return text.trim() ? text : null
+}
+
 function dateParts(value: ExcelJS.CellValue): DateParts | null {
   const cached = cachedValue(value)
   if (cached instanceof Date) {
@@ -107,7 +121,7 @@ function makeRecord(args: {
   warnings: ImportWarning[]
 }): ExcelAttendanceRecord {
   const employeeNumber = textValue(args.idValue)
-  const employeeName = textValue(args.nameValue)
+  const employeeName = sourceNameValue(args.nameValue)
   const sourceDate = args.headingText || textValue(args.headingValue) || ''
   const sourceIn = textValue(args.inValue)
   const sourceOut = textValue(args.outValue)

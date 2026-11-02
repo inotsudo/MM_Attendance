@@ -105,10 +105,7 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     const normalizedNumber = normalizeEmployeeNumber(employee.employeeNumber)
     const identity = normalizedNumber ? `id:${normalizedNumber}` : `roster:${employee.id}`
     const group = groups.get(identity)
-    if (group) {
-      if (!group.name) group.name = employee.fullName
-      continue
-    }
+    if (group) continue
     groups.set(identity, {
       employeeNumber: employee.employeeNumber,
       name: employee.fullName,
@@ -121,8 +118,10 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     let absentCount = 0
     const dayRows = dates.map((date) => {
       const candidates = group.byDate.get(date) ?? []
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
+      const isRestDay = weekday === 'Saturday' || weekday === 'Sunday'
       if (!candidates.length) {
-        const status = group.invalidDates.has(date) ? 'review' as const : 'absent' as const
+        const status = group.invalidDates.has(date) ? 'review' as const : isRestDay ? 'blank' as const : 'absent' as const
         if (status === 'absent') absentCount += 2
         return { date, inTime: null, outTime: null, inStatus: status, outStatus: status, hasEvidence: false }
       }
@@ -135,14 +134,22 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
       const outTime = outgoing.at(-1)?.display ?? null
       const noSideCanBeAssigned = unresolvedNoon && incoming.length === 0 && outgoing.length === 0
       const usableRule = Boolean(dateRule && dateRule.timezone === 'Africa/Kigali')
-      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
-      const isWeekend = weekday === 'Saturday' || weekday === 'Sunday'
       const latestOut = outgoing.at(-1)
       const lastOutClock = latestOut?.validTimestamp ? formatKigaliClock(latestOut.event.timestamp) : null
       const reachedOvertimeThreshold = Boolean(lastOutClock && lastOutClock >= (dateRule?.overtimeFrom ?? DEFAULT_ATTENDANCE_RULES.overtimeFrom))
-      const weekendPolicyMissing = isWeekend && reachedOvertimeThreshold && dateRule?.weekendOvertimeDays == null
-      const inStatus: ManualAttendanceRow['days'][number]['inStatus'] = noSideCanBeAssigned || (incoming[0] && !incoming[0].validTimestamp) || (Boolean(inTime) && !usableRule) ? 'review' : !inTime ? 'absent' : result?.arrivalClassification === 'very_late' ? 'very_late' : result?.arrivalClassification === 'late' ? 'late' : 'normal'
-      const outStatus: ManualAttendanceRow['days'][number]['outStatus'] = noSideCanBeAssigned || (outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) || (Boolean(outTime) && !usableRule) || weekendPolicyMissing ? 'review' : !outTime ? 'absent' : result?.overtimeEvidence ? 'overtime' : 'normal'
+      const weekendPolicyMissing = isRestDay && reachedOvertimeThreshold && (dateRule?.timezone !== 'Africa/Kigali' || dateRule.weekendOvertimeDays == null)
+      const inNeedsReview = noSideCanBeAssigned || Boolean(incoming[0] && !incoming[0].validTimestamp)
+      const outNeedsReview = noSideCanBeAssigned || Boolean(outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) || weekendPolicyMissing
+      const inStatus: ManualAttendanceRow['days'][number]['inStatus'] = inNeedsReview ? 'review'
+        : isRestDay ? inTime ? 'normal' : 'blank'
+          : Boolean(inTime) && !usableRule ? 'review'
+            : !inTime ? 'absent'
+              : result?.arrivalClassification === 'very_late' ? 'very_late'
+                : result?.arrivalClassification === 'late' ? 'late' : 'normal'
+      const outStatus: ManualAttendanceRow['days'][number]['outStatus'] = outNeedsReview ? 'review'
+        : isRestDay ? !outTime ? 'blank' : result?.overtimeEvidence ? 'overtime' : 'normal'
+          : Boolean(outTime) && !usableRule ? 'review'
+            : !outTime ? 'absent' : result?.overtimeEvidence ? 'overtime' : 'normal'
       if (inStatus === 'absent') absentCount++
       if (outStatus === 'absent') absentCount++
       return { date, inTime, outTime, inStatus, outStatus, hasEvidence: true }
@@ -225,6 +232,8 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       const key = `${employee.id}|${date}`
       const sources = evidenceByEmployeeDate.get(key) ?? []
       const noSourceRecords = sources.length === 0
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
+      const isRestDay = weekday === 'Saturday' || weekday === 'Sunday'
       const organized = sources.filter((item) => item.sourceType === 'organized_excel')
       const fingerprint = sources.filter((item) => item.sourceType === 'ivms_pdf_original_records')
       const candidates = (calculationsByEmployeeDate.get(key) ?? []).sort((a, b) => b.version - a.version)
@@ -253,7 +262,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
         : fingerprintOuts.slice(-1).map(({ time }) => time)
       const latestOutForThreshold = outTimes.at(-1)?.replace(/^\*/, '') ?? null
       const outAtOrAfterThreshold = Boolean(applicableRule && latestOutForThreshold && latestOutForThreshold >= applicableRule.overtimeFrom)
-      const weekendOvertimeUnverified = Boolean(current && calculation?.weekend && outAtOrAfterThreshold && applicableRule?.weekendOvertimeDays == null)
+      const weekendOvertimeUnverified = Boolean(isRestDay && outAtOrAfterThreshold && applicableRule?.weekendOvertimeDays == null)
       const notes = new Set<string>()
       const evidenceReviews = sources.flatMap((item) => reviewsByEvidence.get(item.id) ?? [])
       for (const review of evidenceReviews) notes.add(review.description)
@@ -265,7 +274,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       if (!sources.length) {
         kind = 'no_records'
         noSourceRecordDays += 1
-        notes.add('No source records were imported for this day; the weekly attendance sheet marks both IN and OUT as absent under the MM&RJD report convention.')
+        notes.add('No source records were imported for this day. Missing workday IN/OUT slots are marked absent; Saturday and Sunday are rest days.')
       } else {
         evidenceDays += 1
         if (current && calculation) {
@@ -318,11 +327,19 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
         })
       }
       const lateClassification = current && calculation ? calculation.arrivalClassification : null
-      const weekendName = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
-      const weekendOvertimeAllowed = applicableRule?.weekendOvertimeDays?.includes(weekendName as 'Saturday' | 'Sunday') ?? false
-      const outIsOvertime = Boolean(current && outTimes[0] && applicableRule && outTimes[0].replace(/^\*/, '') >= applicableRule.overtimeFrom && (weekendName !== 'Saturday' && weekendName !== 'Sunday' || weekendOvertimeAllowed))
-      const inStatus: ReportDayCell['inStatus'] = noSourceRecords ? 'absent' : !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !inTimes.length ? 'absent' : lateClassification === 'very_late' ? 'very_late' : lateClassification === 'late' ? 'late' : 'normal'
-      const outStatus: ReportDayCell['outStatus'] = noSourceRecords ? 'absent' : !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !outTimes.length ? 'absent' : weekendOvertimeUnverified ? 'review' : outIsOvertime ? 'overtime' : 'normal'
+      const weekendOvertimeAllowed = applicableRule?.weekendOvertimeDays?.includes(weekday as 'Saturday' | 'Sunday') ?? false
+      const outIsOvertime = Boolean(current && outTimes[0] && applicableRule && outTimes[0].replace(/^\*/, '') >= applicableRule.overtimeFrom && (!isRestDay || weekendOvertimeAllowed))
+      const inStatus: ReportDayCell['inStatus'] = noSourceRecords ? isRestDay ? 'blank' : 'absent'
+        : !hasObservedTime ? 'blank'
+          : noonOnlyAmbiguity ? 'review'
+            : isRestDay ? inTimes.length ? 'normal' : 'blank'
+              : !inTimes.length ? 'absent'
+                : lateClassification === 'very_late' ? 'very_late' : lateClassification === 'late' ? 'late' : 'normal'
+      const outStatus: ReportDayCell['outStatus'] = noSourceRecords ? isRestDay ? 'blank' : 'absent'
+        : !hasObservedTime ? 'blank'
+          : noonOnlyAmbiguity ? 'review'
+            : isRestDay ? !outTimes.length ? 'blank' : weekendOvertimeUnverified ? 'review' : outIsOvertime ? 'overtime' : 'normal'
+              : !outTimes.length ? 'absent' : weekendOvertimeUnverified ? 'review' : outIsOvertime ? 'overtime' : 'normal'
       if (inStatus === 'absent') absentMarks++
       if (outStatus === 'absent') absentMarks++
       return {

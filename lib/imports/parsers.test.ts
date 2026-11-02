@@ -56,6 +56,23 @@ describe('attendance source parsers', () => {
     expect(result.records[0].sourcePage).toBe(1)
   })
 
+  it('joins a name split mid-word and ignores page-continuation text as a record anchor', () => {
+    const labels = ['Person ID', 'Name', 'Department', 'Time', 'Attendance Status', 'Attendance Check Point', 'Custom Name', 'Data Source', 'Handling Type', 'Temperature', 'Abnormal']
+    const starts = [10, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+    const items = labels.map((text, index) => ({ text, x: starts[index], y: 200 }))
+    items.push(
+      { text: 'EMP-5', x: 12, y: 100 },
+      { text: 'DUSABIMANA Ne', x: 52, y: 100 },
+      { text: 'po', x: 70, y: 90 },
+      { text: '2026-09-14 08:04:51', x: 152, y: 100 },
+      { text: 'Fingerprint Reader continuation', x: 252, y: 60 },
+    )
+    const result = parseIvmsPageItems(items, 1, 0)
+    expect(result.records).toHaveLength(1)
+    expect(result.records[0].employeeName).toBe('DUSABIMANA Nepo')
+    expect(result.records[0].normalizedTimestamp).toBe('2026-09-14T06:04:51.000Z')
+  })
+
   it('rejects non-PDF signatures and reports a valid non-iVMS PDF as unsupported', async () => {
     await expect(parseIvmsPdf(new Uint8Array([1, 2, 3]))).rejects.toThrow('signature')
     const notIvms = new Uint8Array(await readFile(new URL('./__fixtures__/unsupported-sample.pdf', import.meta.url)))

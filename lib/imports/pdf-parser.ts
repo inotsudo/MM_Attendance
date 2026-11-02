@@ -50,6 +50,15 @@ function joinPositionedRuns(items: PositionedText[]): string {
   return output
 }
 
+function joinWrappedNameLines(lines: string[]): string {
+  return lines.reduce((name, line) => {
+    if (!name) return line
+    // iVMS wraps overlong names through a word without a hyphen. A lowercase
+    // start on the next centered line is the PDF's continuation fragment.
+    return /^\p{Ll}/u.test(line) ? `${name}${line}` : `${name} ${line}`
+  }, '')
+}
+
 function normalizedIdentity(employeeNumber: string | null, employeeName: string | null, index: number) {
   return normalizeEmployeeNumber(employeeNumber) ?? `name:${normalizeEmployeeName(employeeName) ?? `record:${index}`}`
 }
@@ -71,10 +80,15 @@ export function parseIvmsPageItems(items: PositionedText[], page: number, source
     if (cluster < 0) anchorYs.push(item.y)
     else if (item.y > anchorYs[cluster]) anchorYs[cluster] = item.y
   }
-  const fallbackAnchors = rowAnchors.filter((item) => ![0, 3].includes(columnIndex(item.x, starts))
-    && !anchorYs.some((y) => Math.abs(y - item.y) <= 16))
+  // Usually the Person ID or timestamp anchors a row. If both are blank, a
+  // name plus department on the same line can still identify a real row. Do
+  // not anchor on checkpoint continuations or isolated name fragments at page
+  // boundaries.
+  const fallbackAnchors = rowAnchors.filter((item) => [1, 2].includes(columnIndex(item.x, starts)))
+    .filter((item) => rowAnchors.some((peer) => columnIndex(peer.x, starts) !== columnIndex(item.x, starts)
+      && [1, 2].includes(columnIndex(peer.x, starts)) && Math.abs(peer.y - item.y) <= 2))
   for (const item of fallbackAnchors.sort((a, b) => b.y - a.y)) {
-    const cluster = anchorYs.findIndex((y) => Math.abs(y - item.y) <= 13)
+    const cluster = anchorYs.findIndex((y) => Math.abs(y - item.y) <= 2)
     if (cluster < 0) anchorYs.push(item.y)
     else if (item.y > anchorYs[cluster]) anchorYs[cluster] = item.y
   }
@@ -92,7 +106,8 @@ export function parseIvmsPageItems(items: PositionedText[], page: number, source
         const lineY = Math.round(item.y * 2) / 2
         byLine.set(lineY, [...(byLine.get(lineY) ?? []), item])
       }
-      return [...byLine.entries()].sort((a, b) => b[0] - a[0]).map(([, line]) => joinPositionedRuns(line)).filter(Boolean).join(' ')
+      const lines = [...byLine.entries()].sort((a, b) => b[0] - a[0]).map(([, line]) => joinPositionedRuns(line)).filter(Boolean)
+      return fieldIndex === 1 ? joinWrappedNameLines(lines) : lines.join(' ')
     })
     if (cells.every((value) => !value)) continue
     sourceIndex += 1

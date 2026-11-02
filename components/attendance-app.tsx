@@ -79,6 +79,7 @@ type ImportHistoryRow = {
   file_size_bytes: number
   uploaded_at: string
   processing_status: string
+  reprocessed_from_import_id?: string | null
 }
 type AttendanceRuleRecord = {
   id: string
@@ -211,12 +212,26 @@ export function AttendanceApp() {
     }
   }
 
+  async function reprocessImport(importId: string) {
+    setActive('Import attendance')
+    setImportError(null)
+    try {
+      const response = await fetch(`/api/import/${importId}/reprocess`, { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? 'A new parser revision could not be created.')
+      await resumeImport(result.importId)
+    } catch (error) {
+      setImportState('failed')
+      setImportError(error instanceof Error ? error.message : 'The original file could not be reparsed.')
+    }
+  }
+
   return <main className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}><div className="brand-lockup"><div className="brand-mark"><Fingerprint /></div><div><strong>MM&amp;RJD</strong><span>Attendance</span></div></div><nav aria-label="Primary navigation" className="primary-nav">{navItems.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${active === label ? 'active' : ''}`} onClick={() => { setActive(label); setMobileNav(false) }}><Icon className="nav-icon" /><span>{label}</span></button>)}</nav><div className="sidebar-bottom"><button className={`nav-item ${active === 'Settings' ? 'active' : ''}`} onClick={() => { setActive('Settings'); setMobileNav(false) }}><Settings className="nav-icon" /><span>Settings</span></button><div className="user-chip"><div className="avatar avatar-light">?</div><div><strong>Administrator</strong><span>MM&amp;RJD account</span></div><form action="/auth/signout" method="post" className="signout-form"><button type="submit" className="signout-button">Sign out</button></form></div></div></aside>
     {mobileNav && <button className="nav-scrim" aria-label="Close menu" onClick={() => setMobileNav(false)} />}
     <section className="workspace"><header className="topbar"><button className="menu-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu /></button><div className="crumb"><span>MM&amp;RJD</span><span>/</span><strong>{title}</strong></div><div className="top-actions"><button className="icon-button" aria-label="Help"><CircleHelp /></button></div></header><div className="content"><div className="page-heading"><div><p className="eyebrow">Attendance operations</p><h1>{title}</h1><p className="subtitle">{subtitle}</p></div><div className="heading-actions">{active === 'Import attendance' ? <button type="button" className="button secondary" onClick={() => setActive('Reports')} title="Choose a reporting week and download the attendance report as Excel or PDF"><FileBarChart /> Create attendance report</button> : active === 'Reports' ? <button type="button" className="button secondary" onClick={() => reportExportAction.current?.()}><ArrowDownToLine /> Export report</button> : <button type="button" className="button secondary" disabled title="Attendance report export is available from the Reports page."><ArrowDownToLine /> Export</button>}<button className="button primary" onClick={() => setActive('Import attendance')}><Upload /> Import attendance</button></div></div>
       {active === 'Dashboard' && <DashboardView onImport={() => setActive('Import attendance')} />}
-      {active === 'Import attendance' && <ImportView importState={importState} selectedFile={selectedFile} summary={importSummary} preview={importPreview} selections={matchSelections} onSelection={(key, value) => setMatchSelections((current) => ({ ...current, [key]: value }))} onConfirm={confirmImport} error={importError} onFile={uploadFile} onResume={resumeImport} onReset={() => { setSelectedFile(null); setImportSummary(null); setImportPreview(null); setMatchSelections({}); setImportError(null); setActiveImportId(null); setImportState('idle') }} />}
+      {active === 'Import attendance' && <ImportView importState={importState} selectedFile={selectedFile} summary={importSummary} preview={importPreview} selections={matchSelections} onSelection={(key, value) => setMatchSelections((current) => ({ ...current, [key]: value }))} onConfirm={confirmImport} error={importError} onFile={uploadFile} onResume={resumeImport} onReprocess={reprocessImport} onReset={() => { setSelectedFile(null); setImportSummary(null); setImportPreview(null); setMatchSelections({}); setImportError(null); setActiveImportId(null); setImportState('idle') }} />}
       {active === 'Attendance records' && <RecordsView query={query} setQuery={setQuery} />}
       {active === 'Review & corrections' && <ReviewView />}
       {active === 'Reports' && <ReportsView exportAction={reportExportAction} />}
@@ -374,7 +389,7 @@ function ReviewView() {
   </section>
 }
 
-function ImportView({ importState, selectedFile, summary, preview, selections, onSelection, onConfirm, error, onFile, onResume, onReset }: {
+function ImportView({ importState, selectedFile, summary, preview, selections, onSelection, onConfirm, error, onFile, onResume, onReprocess, onReset }: {
   importState: ImportState
   selectedFile: File | null
   summary: ImportSummary | null
@@ -385,6 +400,7 @@ function ImportView({ importState, selectedFile, summary, preview, selections, o
   error: string | null
   onFile: (file: File) => void
   onResume: (importId: string) => void
+  onReprocess: (importId: string) => void
   onReset: () => void
 }) {
   const activeStep = ['idle', 'selected', 'uploading', 'failed'].includes(importState) ? 1 : ['previewing', 'previewed'].includes(importState) ? 2 : 3
@@ -430,11 +446,11 @@ function ImportView({ importState, selectedFile, summary, preview, selections, o
       </section>
     </>}
     {!preview && <div className="steps">{['Validate', 'Extract and preview', 'Process and save'].map((label, index) => <div key={label} className={`step ${activeStep >= index + 1 ? 'active' : ''}`}><b>{index + 1}</b><span>{label}</span></div>)}</div>}
-    <ImportHistory refreshKey={`${importState}:${summary?.message ?? ''}`} onResume={onResume} />
+    <ImportHistory refreshKey={`${importState}:${summary?.message ?? ''}`} onResume={onResume} onReprocess={onReprocess} />
   </section>
 }
 
-function ImportHistory({ refreshKey, onResume }: { refreshKey: string; onResume: (importId: string) => void }) {
+function ImportHistory({ refreshKey, onResume, onReprocess }: { refreshKey: string; onResume: (importId: string) => void; onReprocess: (importId: string) => void }) {
   const [imports, setImports] = useState<ImportHistoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -457,7 +473,7 @@ function ImportHistory({ refreshKey, onResume }: { refreshKey: string; onResume:
     <div className="panel-heading"><div><h2>Uploaded original files</h2><p>Private source files remain available here, including files that still need review or retry.</p></div><a className="button secondary small" href="/api/import?format=xlsx" download title="Download an Excel workbook of uploaded source files"><ArrowDownToLine /> Export import log</a></div>
     {error && <p role="alert" className="form-notice">{error}</p>}
     {loading ? <p className="subtitle">Loading import history…</p> : imports.length === 0 ? <p className="subtitle">No files have been uploaded yet.</p> : <div className="table-wrap"><table><thead><tr><th>Original file</th><th>Type</th><th>Uploaded</th><th>Size</th><th>Processing status</th><th>File</th></tr></thead><tbody>
-      {imports.map((item) => <tr key={item.id}><td>{item.original_filename}</td><td>{item.source_type === 'ivms_pdf_original_records' ? 'iVMS PDF' : 'Attendance XLSX'}</td><td>{new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(item.uploaded_at))}</td><td>{formatFileSize(item.file_size_bytes)}</td><td><span className={`import-status ${item.processing_status}`}>{item.processing_status.replaceAll('_', ' ')}</span></td><td className="heading-actions"><a className="button secondary small" href={`/api/import/${item.id}/download`}><ArrowDownToLine /> Download original</a>{['parsed', 'needs_review', 'completed', 'failed'].includes(item.processing_status) && <button className="button secondary small" type="button" onClick={() => onResume(item.id)}>Resume / check</button>}</td></tr>)}
+      {imports.map((item) => <tr key={item.id}><td>{item.original_filename}{item.reprocessed_from_import_id && <small className="subtitle">Reparsed copy</small>}</td><td>{item.source_type === 'ivms_pdf_original_records' ? 'iVMS PDF' : 'Attendance XLSX'}</td><td>{new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(item.uploaded_at))}</td><td>{formatFileSize(item.file_size_bytes)}</td><td><span className={`import-status ${item.processing_status}`}>{item.processing_status.replaceAll('_', ' ')}</span></td><td className="heading-actions"><a className="button secondary small" href={`/api/import/${item.id}/download`}><ArrowDownToLine /> Download original</a>{['parsed', 'needs_review', 'completed', 'failed'].includes(item.processing_status) && <button className="button secondary small" type="button" onClick={() => onResume(item.id)}>Resume / check</button>}{['completed', 'needs_review'].includes(item.processing_status) && !item.reprocessed_from_import_id && <button className="button secondary small" type="button" onClick={() => onReprocess(item.id)}>Reparse original</button>}</td></tr>)}
     </tbody></table></div>}
   </section>
 }

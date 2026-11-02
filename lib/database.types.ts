@@ -36,6 +36,7 @@ type AttendanceImport = {
   processing_started_at: string | null
   processing_completed_at: string | null
   created_at: string
+  reprocessed_from_import_id: string | null
 }
 type RawFingerprintEvent = {
   id: string

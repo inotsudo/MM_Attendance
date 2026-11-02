@@ -26,10 +26,20 @@ export async function GET(request: Request) {
   if (!isSupabaseConfigured()) return NextResponse.json({ error: 'Supabase is not configured.' }, { status: 503 })
   if (!(await getAdministratorProfile())) return NextResponse.json({ error: 'Administrator access is required.' }, { status: 401 })
   const supabase = await createSupabaseServerClient()
-  const { data, error } = await supabase.from('attendance_imports')
-    .select('id, original_filename, source_type, file_type, file_size_bytes, uploaded_at, processing_status, processing_error')
+  let { data, error } = await supabase.from('attendance_imports')
+    .select('id, original_filename, source_type, file_type, file_size_bytes, uploaded_at, processing_status, processing_error, reprocessed_from_import_id')
     .order('uploaded_at', { ascending: false })
     .limit(500)
+  if (error) {
+    // Keep import history available until the optional reprocessing migration
+    // has been applied to the connected Supabase project.
+    const legacy = await supabase.from('attendance_imports')
+      .select('id, original_filename, source_type, file_type, file_size_bytes, uploaded_at, processing_status, processing_error')
+      .order('uploaded_at', { ascending: false })
+      .limit(500)
+    data = legacy.data?.map((item) => ({ ...item, reprocessed_from_import_id: null })) ?? null
+    error = legacy.error
+  }
   if (error) return NextResponse.json({ error: 'Import history could not be loaded.' }, { status: 500 })
 
   if (new URL(request.url).searchParams.get('format') === 'csv') {
@@ -81,11 +91,20 @@ export async function POST(request: Request) {
   if (!sourceType) return NextResponse.json({ error: 'Only PDF Original Records Reports and XLSX attendance workbooks are supported.' }, { status: 415 })
 
   const supabase = await createSupabaseServerClient()
-  const { data: duplicate, error: duplicateError } = await supabase
+  let { data: duplicate, error: duplicateError } = await supabase
     .from('attendance_imports')
     .select('id, source_type, processing_status')
     .eq('sha256_checksum', input.sha256)
+    .is('reprocessed_from_import_id', null)
     .maybeSingle()
+  if (duplicateError) {
+    const legacy = await supabase.from('attendance_imports')
+      .select('id, source_type, processing_status')
+      .eq('sha256_checksum', input.sha256)
+      .maybeSingle()
+    duplicate = legacy.data
+    duplicateError = legacy.error
+  }
   if (duplicateError) return NextResponse.json({ error: 'Could not check whether this file was already uploaded.' }, { status: 500 })
   if (duplicate) {
     const countQuery = duplicate.source_type === 'ivms_pdf_original_records'

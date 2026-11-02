@@ -62,16 +62,16 @@ function toEngineRules(rule: ReportRule | undefined): AttendanceRules {
   }
 }
 
-function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[]): ManualAttendanceRow[] {
+function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[], employees: ReportEmployee[]): ManualAttendanceRow[] {
   type Candidate = { event: FingerprintEvent; display: string; explicitDirection: 'IN' | 'OUT' | null; validTimestamp: boolean }
-  const groups = new Map<string, { employeeNumber: string | null; name: string; byDate: Map<string, Candidate[]> }>()
+  const groups = new Map<string, { employeeNumber: string | null; name: string; byDate: Map<string, Candidate[]>; invalidDates: Set<string> }>()
   for (const item of evidence) {
     if (!item.date || !dates.includes(item.date)) continue
     const number = normalizeEmployeeNumber(item.employeeNumber)
     const normalizedName = normalizeEmployeeName(item.employeeName)
     if (!number && !normalizedName) continue
     const identity = number ? `id:${number}` : `name:${normalizedName}`
-    const group = groups.get(identity) ?? { employeeNumber: item.employeeNumber, name: item.employeeName ?? '', byDate: new Map<string, Candidate[]>() }
+    const group = groups.get(identity) ?? { employeeNumber: item.employeeNumber, name: item.employeeName ?? '', byDate: new Map<string, Candidate[]>(), invalidDates: new Set<string>() }
     if (!group.name && item.employeeName) group.name = item.employeeName
     groups.set(identity, group)
     if (!item.date || !dates.includes(item.date)) continue
@@ -79,6 +79,9 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     if (item.sourceType === 'ivms_pdf_original_records' && item.timestamp) {
       const clock = formatKigaliClock(item.timestamp)
       if (clock) candidates.push({ event: { id: item.id, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp: item.timestamp }, display: `*${clock}`, explicitDirection: null, validTimestamp: true })
+      else group.invalidDates.add(item.date)
+    } else if (item.sourceType === 'ivms_pdf_original_records') {
+      group.invalidDates.add(item.date)
     } else if (item.sourceType === 'organized_excel') {
       if (item.normalizedInAt || item.sourceIn) {
         const rawClock = item.sourceIn?.replace(/^\*+/, '')
@@ -96,11 +99,33 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     if (candidates.length) group.byDate.set(item.date, [...(group.byDate.get(item.date) ?? []), ...candidates])
   }
 
+  // Include the active roster so employees with no events in the selected week
+  // still receive a row. Where source events exist, retain their original name.
+  for (const employee of employees) {
+    const normalizedNumber = normalizeEmployeeNumber(employee.employeeNumber)
+    const identity = normalizedNumber ? `id:${normalizedNumber}` : `roster:${employee.id}`
+    const group = groups.get(identity)
+    if (group) {
+      if (!group.name) group.name = employee.fullName
+      continue
+    }
+    groups.set(identity, {
+      employeeNumber: employee.employeeNumber,
+      name: employee.fullName,
+      byDate: new Map(),
+      invalidDates: new Set(),
+    })
+  }
+
   return [...groups.entries()].map(([identity, group]) => {
     let absentCount = 0
     const dayRows = dates.map((date) => {
       const candidates = group.byDate.get(date) ?? []
-      if (!candidates.length) return { date, inTime: null, outTime: null, inStatus: 'blank' as const, outStatus: 'blank' as const, hasEvidence: false }
+      if (!candidates.length) {
+        const status = group.invalidDates.has(date) ? 'review' as const : 'absent' as const
+        if (status === 'absent') absentCount += 2
+        return { date, inTime: null, outTime: null, inStatus: status, outStatus: status, hasEvidence: false }
+      }
       const dateRule = rules.filter((rule) => rule.effectiveFrom <= date).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom) || a.version - b.version).at(-1)
       const result = processAttendanceEvents(candidates.map((candidate) => candidate.event), toEngineRules(dateRule))[0]
       const incoming = candidates.filter((candidate) => candidate.explicitDirection === 'IN' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === 'IN')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
@@ -109,13 +134,20 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
       const inTime = incoming[0]?.display ?? null
       const outTime = outgoing.at(-1)?.display ?? null
       const noSideCanBeAssigned = unresolvedNoon && incoming.length === 0 && outgoing.length === 0
-      const inStatus: ManualAttendanceRow['days'][number]['inStatus'] = noSideCanBeAssigned || (incoming[0] && !incoming[0].validTimestamp) ? 'review' : !inTime ? 'absent' : result?.arrivalClassification === 'very_late' ? 'very_late' : result?.arrivalClassification === 'late' ? 'late' : 'normal'
-      const outStatus: ManualAttendanceRow['days'][number]['outStatus'] = noSideCanBeAssigned || (outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) ? 'review' : !outTime ? 'absent' : result?.overtimeEvidence ? 'overtime' : 'normal'
+      const usableRule = Boolean(dateRule && dateRule.timezone === 'Africa/Kigali')
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
+      const isWeekend = weekday === 'Saturday' || weekday === 'Sunday'
+      const latestOut = outgoing.at(-1)
+      const lastOutClock = latestOut?.validTimestamp ? formatKigaliClock(latestOut.event.timestamp) : null
+      const reachedOvertimeThreshold = Boolean(lastOutClock && lastOutClock >= (dateRule?.overtimeFrom ?? DEFAULT_ATTENDANCE_RULES.overtimeFrom))
+      const weekendPolicyMissing = isWeekend && reachedOvertimeThreshold && dateRule?.weekendOvertimeDays == null
+      const inStatus: ManualAttendanceRow['days'][number]['inStatus'] = noSideCanBeAssigned || (incoming[0] && !incoming[0].validTimestamp) || (Boolean(inTime) && !usableRule) ? 'review' : !inTime ? 'absent' : result?.arrivalClassification === 'very_late' ? 'very_late' : result?.arrivalClassification === 'late' ? 'late' : 'normal'
+      const outStatus: ManualAttendanceRow['days'][number]['outStatus'] = noSideCanBeAssigned || (outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) || (Boolean(outTime) && !usableRule) || weekendPolicyMissing ? 'review' : !outTime ? 'absent' : result?.overtimeEvidence ? 'overtime' : 'normal'
       if (inStatus === 'absent') absentCount++
       if (outStatus === 'absent') absentCount++
       return { date, inTime, outTime, inStatus, outStatus, hasEvidence: true }
     })
-    return { sourceEmployeeNumber: group.employeeNumber, employeeName: group.name || 'Missing source name · review', days: dayRows, absentCount, identity }
+    return { sourceEmployeeNumber: group.employeeNumber, employeeName: group.name, days: dayRows, absentCount, identity }
   }).sort((a, b) => {
     const aId = normalizeEmployeeNumber(a.sourceEmployeeNumber) ?? ''
     const bId = normalizeEmployeeNumber(b.sourceEmployeeNumber) ?? ''
@@ -192,6 +224,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
     const days = dates.map((date) => {
       const key = `${employee.id}|${date}`
       const sources = evidenceByEmployeeDate.get(key) ?? []
+      const noSourceRecords = sources.length === 0
       const organized = sources.filter((item) => item.sourceType === 'organized_excel')
       const fingerprint = sources.filter((item) => item.sourceType === 'ivms_pdf_original_records')
       const candidates = (calculationsByEmployeeDate.get(key) ?? []).sort((a, b) => b.version - a.version)
@@ -218,6 +251,9 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       const outTimes = organized.length
         ? organized.flatMap((item) => item.sourceOut ? [formatKigaliTime(item.normalizedOutAt) ?? item.sourceOut] : []).sort().slice(-1)
         : fingerprintOuts.slice(-1).map(({ time }) => time)
+      const latestOutForThreshold = outTimes.at(-1)?.replace(/^\*/, '') ?? null
+      const outAtOrAfterThreshold = Boolean(applicableRule && latestOutForThreshold && latestOutForThreshold >= applicableRule.overtimeFrom)
+      const weekendOvertimeUnverified = Boolean(current && calculation?.weekend && outAtOrAfterThreshold && applicableRule?.weekendOvertimeDays == null)
       const notes = new Set<string>()
       const evidenceReviews = sources.flatMap((item) => reviewsByEvidence.get(item.id) ?? [])
       for (const review of evidenceReviews) notes.add(review.description)
@@ -229,7 +265,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       if (!sources.length) {
         kind = 'no_records'
         noSourceRecordDays += 1
-        notes.add('No source records were imported for this day; this is not a verified absence.')
+        notes.add('No source records were imported for this day; the weekly attendance sheet marks both IN and OUT as absent under the MM&RJD report convention.')
       } else {
         evidenceDays += 1
         if (current && calculation) {
@@ -240,10 +276,8 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
           if (calculation.arrivalClassification === 'late') lateDays += 1
           if (calculation.arrivalClassification === 'very_late') veryLateDays += 1
           if (calculation.completeness !== 'complete_evidence') incompleteDays += 1
-          const lastOut = organized.map((item) => formatKigaliTime(item.normalizedOutAt)).filter((time): time is string => Boolean(time)).sort().at(-1)
-          const outAtOrAfterThreshold = Boolean(lastOut && lastOut >= applicableRule!.overtimeFrom)
           const weekendName = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
-          if (calculation.weekend && outAtOrAfterThreshold && applicableRule!.weekendOvertimeDays == null) {
+          if (weekendOvertimeUnverified) {
             overtime = 'Unverified'
             notes.add('Weekend overtime policy is not configured; this time is not counted as verified overtime.')
           } else {
@@ -287,8 +321,8 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       const weekendName = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
       const weekendOvertimeAllowed = applicableRule?.weekendOvertimeDays?.includes(weekendName as 'Saturday' | 'Sunday') ?? false
       const outIsOvertime = Boolean(current && outTimes[0] && applicableRule && outTimes[0].replace(/^\*/, '') >= applicableRule.overtimeFrom && (weekendName !== 'Saturday' && weekendName !== 'Sunday' || weekendOvertimeAllowed))
-      const inStatus: ReportDayCell['inStatus'] = !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !inTimes.length ? 'absent' : lateClassification === 'very_late' ? 'very_late' : lateClassification === 'late' ? 'late' : 'normal'
-      const outStatus: ReportDayCell['outStatus'] = !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !outTimes.length ? 'absent' : outIsOvertime ? 'overtime' : 'normal'
+      const inStatus: ReportDayCell['inStatus'] = noSourceRecords ? 'absent' : !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !inTimes.length ? 'absent' : lateClassification === 'very_late' ? 'very_late' : lateClassification === 'late' ? 'late' : 'normal'
+      const outStatus: ReportDayCell['outStatus'] = noSourceRecords ? 'absent' : !hasObservedTime ? 'blank' : noonOnlyAmbiguity ? 'review' : !outTimes.length ? 'absent' : weekendOvertimeUnverified ? 'review' : outIsOvertime ? 'overtime' : 'normal'
       if (inStatus === 'absent') absentMarks++
       if (outStatus === 'absent') absentMarks++
       return {
@@ -334,6 +368,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
     const rule = ruleFor(day, input.rules)
     if (rule) uniqueRules.set(rule.id, rule)
   }
+  const manualAttendanceRows = buildManualAttendanceRows(input.evidence, dates, input.rules, input.employees)
   return {
     metadata: {
       reportId: input.reportId,
@@ -343,13 +378,13 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       timezone: 'Africa/Kigali',
       periodStart: input.from,
       periodEnd: input.to,
-      rosterBasis: 'Employees explicitly matched to source records in the selected import and period; historical employment dates are not stored.',
+      rosterBasis: 'Active employee roster at report generation plus source identities; historical employment dates are not stored.',
     },
     dates,
     rules: [...uniqueRules.values()],
     imports: input.imports,
     employees: employeeRows,
-    manualAttendanceRows: buildManualAttendanceRows(input.evidence, dates, input.rules),
+    manualAttendanceRows,
     exceptions,
     fingerprintEvidence: input.evidence.filter((item) => item.sourceType === 'ivms_pdf_original_records' && (item.date == null || (item.date >= input.from && item.date <= input.to))),
     summary: {
@@ -357,7 +392,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       attendanceDaysCalculated: employeeRows.reduce((sum, row) => sum + row.totals.calculatedDays, 0),
       daysWithEvidence: employeeRows.reduce((sum, row) => sum + row.totals.evidenceDays, 0),
       noSourceRecordDays: employeeRows.reduce((sum, row) => sum + row.totals.noSourceRecordDays, 0),
-      absentMarks: employeeRows.reduce((sum, row) => sum + row.totals.absentMarks, 0),
+      absentMarks: manualAttendanceRows.reduce((sum, row) => sum + row.absentCount, 0),
       lateDays: employeeRows.reduce((sum, row) => sum + row.totals.lateDays, 0),
       veryLateDays: employeeRows.reduce((sum, row) => sum + row.totals.veryLateDays, 0),
       verifiedOvertimeDays: employeeRows.reduce((sum, row) => sum + row.totals.overtimeDays, 0),

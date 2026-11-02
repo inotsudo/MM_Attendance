@@ -80,7 +80,7 @@ export async function loadAttendanceReportInput(from: string, to: string, import
   if (!totalSourceRecords) throw new Error('No extracted attendance events are saved for this import in the database. The file may be a valid iVMS export, but its status alone does not prove event persistence. Go to Import attendance and use Resume / check before exporting.')
 
   const [employeeRows, departmentRows, ruleRows, allCalculationRows, organizedRows, rawRows] = await Promise.all([
-    fetchAll((startAt, endAt) => supabase.from('employees').select('id, employee_number, full_name, department_id').order('employee_number').range(startAt, endAt)),
+    fetchAll((startAt, endAt) => supabase.from('employees').select('id, employee_number, full_name, department_id, is_active').eq('is_active', true).order('employee_number').range(startAt, endAt)),
     fetchAll((startAt, endAt) => supabase.from('departments').select('id, name').range(startAt, endAt)),
     fetchAll((startAt, endAt) => supabase.from('attendance_rule_versions').select('id, version, attendance_timezone, effective_from, normal_start, grace_until, very_late_from, scheduled_end, overtime_from, policy').lte('effective_from', to).order('effective_from').order('version').range(startAt, endAt)),
     fetchAll((startAt, endAt) => supabase.from('daily_attendance_calculations').select('id, employee_id, attendance_date, calculation_version, rules_version_id, first_recorded_at, last_recorded_at, recorded_event_count, arrival_classification, overtime_evidence, is_weekend, completeness, calculation_result, calculated_at').gte('attendance_date', from).lte('attendance_date', to).order('attendance_date').range(startAt, endAt)),
@@ -141,8 +141,7 @@ export async function loadAttendanceReportInput(from: string, to: string, import
     ...relevantOrganizedRows.map((row) => ({ id: row.id, importId: row.import_id, sourceType: 'organized_excel' as const, employeeId: organizedMatches.get(row.id) ?? null, employeeNumber: row.source_employee_number, employeeName: row.source_employee_name, department: row.source_department, date: row.normalized_work_date ?? (/^\d{4}-\d{2}-\d{2}/.test(row.source_work_date_text) ? row.source_work_date_text.slice(0, 10) : null), timestamp: null, sourceTimestampText: null, sourceIn: row.source_in_text, normalizedInAt: row.normalized_in_at, sourceOut: row.source_out_text, normalizedOutAt: row.normalized_out_at, attendanceStatus: null, checkpoint: null, sourceSheet: row.source_sheet, sourcePage: null, sourceRow: row.source_row })),
   ]
   const departmentNames = new Map(departmentRows.map((row) => [row.id, row.name]))
-  const matchedEmployeeIds = new Set([...rawMatches.values(), ...organizedMatches.values()].filter((id): id is string => Boolean(id)))
-  const inputEmployees = employeeRows.filter((row) => matchedEmployeeIds.has(row.id)).map((row) => ({ id: row.id, employeeNumber: row.employee_number, fullName: row.full_name, department: row.department_id ? departmentNames.get(row.department_id) ?? null : null }))
+  const inputEmployees = employeeRows.map((row) => ({ id: row.id, employeeNumber: row.employee_number, fullName: row.full_name, department: row.department_id ? departmentNames.get(row.department_id) ?? null : null }))
   const rules: ReportRule[] = ruleRows.map((row) => ({ id: row.id, version: row.version, effectiveFrom: row.effective_from, normalStart: row.normal_start, graceUntil: row.grace_until, veryLateFrom: row.very_late_from, scheduledEnd: row.scheduled_end, overtimeFrom: row.overtime_from, timezone: row.attendance_timezone, weekendOvertimeDays: policyWeekendOvertimeDays(row.policy) }))
   const calculations: ReportCalculation[] = calculationRows.filter((row) => row.employee_id).map((row) => {
     const result = row.calculation_result

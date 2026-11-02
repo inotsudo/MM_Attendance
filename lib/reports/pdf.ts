@@ -96,9 +96,10 @@ function sheetPages(report: AttendanceReport) {
     const veryLateDays = report.manualAttendanceRows.reduce((sum, employee) => sum + employee.days.filter((day) => day.inStatus === 'very_late').length, 0)
     const overtimeDays = report.manualAttendanceRows.reduce((sum, employee) => sum + employee.days.filter((day) => day.outStatus === 'overtime').length, 0)
     drawText(commands, MARGIN, 72, `Employees: ${report.manualAttendanceRows.length}  |  Absence marks: ${totalAbsenceMarks}  |  Late: ${lateDays}  |  Very late: ${veryLateDays}  |  Overtime evidence: ${overtimeDays}`, 7, true, color.navy)
-    drawText(commands, MARGIN, 85, 'Yellow: late from 08:30  |  Orange: very late from 09:30  |  Red: missing IN/OUT counterpart  |  Green: verified overtime from 19:30', 6.5, false, color.muted)
+    drawText(commands, MARGIN, 85, 'Yellow: late from 08:30  |  Orange: very late from 09:30  |  Red: absent/missing IN or OUT (each red cell counted)', 6.5, false, color.muted)
+    drawText(commands, MARGIN, 94, 'Green: verified overtime from 19:30 when allowed by the applicable weekday/weekend rule; unconfigured weekend overtime is marked for review.', 6.5, false, color.muted)
 
-    const tableTop = 103
+    const tableTop = 111
     const dayTopHeight = 22
     const subTopHeight = 19
     const nameX = MARGIN
@@ -143,8 +144,9 @@ function sheetPages(report: AttendanceReport) {
     }
 
     const noteTop = bodyTop + Math.max(rows.length, 1) * rowHeight + 12
-    drawText(commands, MARGIN, noteTop, 'iVMS rule: before 12:00 is IN; after 12:00 is OUT. Blue blank cells mean no source event and are not counted as absent.', 6.5, false, color.muted)
-    const legendTop = noteTop + 12
+    drawText(commands, MARGIN, noteTop, 'iVMS rule: before 12:00 is IN; after 12:00 is OUT. Earliest IN and latest OUT are shown.', 6.5, false, color.muted)
+    drawText(commands, MARGIN, noteTop + 8, 'A day with no recorded event has red IN and OUT cells; each red cell adds to No. absent. Weekend overtime follows the applicable rules.', 6.5, false, color.muted)
+    const legendTop = noteTop + 19
     const legend = [
       { label: 'Very late', fill: color.orange },
       { label: 'Absent', fill: color.red },

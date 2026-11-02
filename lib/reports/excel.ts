@@ -160,10 +160,10 @@ export async function createAttendanceWorkbook(report: AttendanceReport) {
 
   sheet.mergeCells(rowNumber, 1, rowNumber, absentColumn)
   const policyNote = sheet.getCell(rowNumber, 1)
-  policyNote.value = 'Attendance key: before 12:00 = IN; after 12:00 = OUT. Yellow = late (08:30+); orange = very late (09:30+); red = missing counterpart and counted in No. absent; green = verified overtime (19:30+, weekend rules apply). Blue blank cells mean no source event and are not counted absent.'
+  policyNote.value = 'Before 12:00 = IN; after 12:00 = OUT; earliest IN and latest OUT are shown. Yellow = late (08:30+); orange = very late (09:30+). Red = missing IN/OUT; each red cell counts in No. absent, and a no-event day has two red cells. Green = verified overtime (19:30+) when allowed by the applicable weekday/weekend rule. Weekend overtime with no configured rule is marked for review.'
   styleCell(policyNote, { fill: 'F3F6FC', color: '495675', size: 9, horizontal: 'left', borderColor: 'D5DEEE' })
   policyNote.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
-  sheet.getRow(rowNumber).height = 34
+  sheet.getRow(rowNumber).height = 42
   rowNumber++
   const legend = [
     { label: 'very late', color: colors.orange },

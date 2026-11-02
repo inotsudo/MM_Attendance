@@ -36,9 +36,9 @@ const reportInput: BuildAttendanceReportInput = {
     { id: 'entry-sat-out', importId: 'import-excel', sourceType: 'organized_excel', employeeId: 'emp-1', employeeNumber: 'TEST-001', employeeName: 'Alice Example', department: 'Operations', date: '2026-10-31', timestamp: null, sourceTimestampText: null, sourceIn: null, normalizedInAt: null, sourceOut: '20:00', normalizedOutAt: '2026-10-31T18:00:00.000Z', attendanceStatus: null, checkpoint: null, sourceSheet: 'October', sourcePage: null, sourceRow: 12 },
   ],
   calculations: [
-    { id: 'calc-mon', employeeId: 'emp-1', date: '2026-10-26', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-26T06:00:00.000Z', lastRecordedAt: '2026-10-26T17:30:00.000Z', recordedEventCount: 2, arrivalClassification: 'on_time', overtimeEvidence: true, weekend: false, completeness: 'complete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 2, evidenceIds: ['entry-mon-in', 'entry-mon-out'], correctionCount: 0 },
-    { id: 'calc-tue', employeeId: 'emp-1', date: '2026-10-27', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-27T07:30:00.000Z', lastRecordedAt: '2026-10-27T07:30:00.000Z', recordedEventCount: 1, arrivalClassification: 'very_late', overtimeEvidence: false, weekend: false, completeness: 'incomplete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 2, evidenceIds: ['entry-tue'], correctionCount: 0 },
-    { id: 'calc-sat', employeeId: 'emp-1', date: '2026-10-31', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-31T06:00:00.000Z', lastRecordedAt: '2026-10-31T18:00:00.000Z', recordedEventCount: 2, arrivalClassification: 'on_time', overtimeEvidence: false, weekend: true, completeness: 'complete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 2, evidenceIds: ['entry-sat-in', 'entry-sat-out'], correctionCount: 0 },
+    { id: 'calc-mon', employeeId: 'emp-1', date: '2026-10-26', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-26T06:00:00.000Z', lastRecordedAt: '2026-10-26T17:30:00.000Z', recordedEventCount: 2, arrivalClassification: 'on_time', overtimeEvidence: true, weekend: false, completeness: 'complete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 3, evidenceIds: ['entry-mon-in', 'entry-mon-out'], correctionCount: 0 },
+    { id: 'calc-tue', employeeId: 'emp-1', date: '2026-10-27', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-27T07:30:00.000Z', lastRecordedAt: '2026-10-27T07:30:00.000Z', recordedEventCount: 1, arrivalClassification: 'very_late', overtimeEvidence: false, weekend: false, completeness: 'incomplete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 3, evidenceIds: ['entry-tue'], correctionCount: 0 },
+    { id: 'calc-sat', employeeId: 'emp-1', date: '2026-10-31', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-31T06:00:00.000Z', lastRecordedAt: '2026-10-31T18:00:00.000Z', recordedEventCount: 2, arrivalClassification: 'on_time', overtimeEvidence: false, weekend: true, completeness: 'complete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 3, evidenceIds: ['entry-sat-in', 'entry-sat-out'], correctionCount: 0 },
   ],
   corrections: [],
   reviews: [
@@ -83,6 +83,30 @@ describe('attendance report dataset and actual exports', () => {
     expect(report.exceptions.some((item) => item.explanation.includes('outdated'))).toBe(true)
   })
 
+  it('uses persisted v3 calculations for iVMS noon direction, earliest IN, latest OUT and report colors', async () => {
+    const input = structuredClone(reportInput)
+    input.calculations.push({ id: 'calc-wed-pdf', employeeId: 'emp-1', date: '2026-10-28', version: 1, rulesVersionId: 'rule-1', firstRecordedAt: '2026-10-28T06:00:00.000Z', lastRecordedAt: '2026-10-28T15:30:00.000Z', recordedEventCount: 2, arrivalClassification: 'on_time', overtimeEvidence: false, weekend: false, completeness: 'complete_evidence', calculatedAt: '2026-11-01T08:20:00Z', engineVersion: 3, evidenceIds: ['pdf-wed-1', 'pdf-wed-2'], correctionCount: 0 })
+    const report = buildAttendanceReport(input)
+    const day = report.employees[0].days[2]
+    expect(day.kind).toBe('calculated')
+    expect(day.inTimes).toEqual(['08:00'])
+    expect(day.outTimes).toEqual(['17:30'])
+    expect(day.classification).toBe('On time')
+    expect(day.completeness).toBe('Evidence complete')
+    expect(day.outStatus).toBe('normal')
+
+    const bytes = await createAttendanceWorkbook(report)
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
+    const attendance = workbook.getWorksheet('Attendance Sheet')!
+    expect(attendance.getCell('F6').text).toBe('*08:00:00')
+    expect(attendance.getCell('G6').text).toBe('*17:30:00')
+    expect(attendance.getCell('P6').value).toBe(1)
+    expect((attendance.getCell('E6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FFFF0000')
+    expect((attendance.getCell('C6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FF8EE07E')
+    expect((attendance.getCell('D6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FFFFC000')
+  })
+
   it('identifies historical correction actions instead of exporting the old classification as current', () => {
     const input = structuredClone(reportInput)
     input.corrections = [{ id: 'correction-1', calculationId: 'calc-mon', employeeId: 'emp-1', correctedAt: '2026-11-01T09:00:00Z', correctedBy: 'admin-profile-1', reason: 'Manager confirmed a corrected record.', correctionType: 'arrival_time' }]
@@ -113,49 +137,39 @@ describe('attendance report dataset and actual exports', () => {
     expect(text).toContain('No review exceptions')
   })
 
-  it('opens and inspects the generated Excel workbook and PDF contents', async () => {
+  it('creates the manual attendance grid and inspects the generated PDF contents', async () => {
     const report = buildAttendanceReport(reportInput)
     const workbookBytes = await createAttendanceWorkbook(report)
     await writeFile('/tmp/mmrjd-weekly-report-fixture.xlsx', Buffer.from(workbookBytes))
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(Buffer.from(workbookBytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
-    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Weekly Attendance', 'Attendance Summary', 'Review & Exceptions', 'Report Metadata'])
-    const weekly = workbook.getWorksheet('Weekly Attendance')!
-    expect(weekly.getCell('A1').text).toContain('Weekly Employee Attendance Report')
-    expect(weekly.getCell('A2').text).toContain('2026-10-26 to 2026-11-01')
-    expect(weekly.getCell('A6').text).toBe('Employee ID')
-    expect(weekly.getCell('A8').text).toBe('TEST-001')
-    expect(weekly.getCell('D6').text).toContain('Mon 26 Oct')
-    expect(weekly.getCell('D7').text).toBe('IN')
-    expect(weekly.getCell('E7').text).toBe('OUT')
-    expect(weekly.getCell('D8').text).toBe('*08:00:00')
-    expect(weekly.getCell('E8').text).toBe('19:30')
-    expect(weekly.getCell('G8').text).toBe('09:30')
-    expect(weekly.getCell('I8').text).toContain('Very late')
-    expect(weekly.getCell('J8').text).toBe('')
-    expect(weekly.getCell('K8').text).toBe('')
-    expect(weekly.getCell('L8').text).toBe('Direction unknown')
-    expect(weekly.getCell('Y8').value).toBe(3)
-    expect(weekly.getCell('AB8').value).toBe(1)
-    expect(weekly.getCell('T8').text).toBe('20:00')
-    expect(weekly.getCell('AF8').value).toBe('Not assessed')
-    expect(weekly.views[0]).toMatchObject({ state: 'frozen', ySplit: 7, xSplit: 3 })
-    expect(weekly.autoFilter).toBeDefined()
-    expect(weekly.pageSetup.orientation).toBe('landscape')
-    expect(weekly.pageSetup.fitToWidth).toBe(2)
-    expect(weekly.pageSetup.printTitlesColumn).toBe('A:C')
-    expect((weekly as unknown as { conditionalFormattings: Array<{ rules: unknown[] }> }).conditionalFormattings[0].rules).toHaveLength(1)
-    const summary = workbook.getWorksheet('Attendance Summary')!
-    expect(summary.getCell('A4').text).toBe('TEST-001')
-    expect(summary.getCell('H4').value).toBe(1)
-    expect(summary.getCell('J4').value).toBe(3)
-    expect(summary.getCell('K4').value).toBe('Not assessed')
-    const review = workbook.getWorksheet('Review & Exceptions')!
-    expect(review.getColumn(1).values).toContain('Original fingerprint events (direction is not inferred)')
-    expect(review.getColumn(1).values).toContain('TEST-001')
-    const metadata = workbook.getWorksheet('Report Metadata')!
-    expect(metadata.getColumn(2).values).toContain('report-fixture-20261026')
-    expect(metadata.getColumn(1).values).toContain('import-pdf')
+    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Attendance Sheet'])
+    const attendance = workbook.getWorksheet('Attendance Sheet')!
+    expect(attendance.getCell('A1').text).toBe('MM&RJD  |  Weekly Employee Attendance Sheet')
+    expect(attendance.getCell('A3').text).toContain('Reporting period: 2026-10-26 to 2026-11-01')
+    expect(attendance.getCell('A4').text).toBe('Employees Names')
+    expect(attendance.getCell('D2').text).toBe('October–November')
+    expect(attendance.getCell('L2').text).toBe('2026')
+    expect(attendance.getCell('B4').text).toBe('26/Oct')
+    expect(attendance.getCell('B4').alignment?.textRotation).toBe(90)
+    expect(attendance.getCell('B5').text).toBe('IN')
+    expect(attendance.getCell('C5').text).toBe('OUT')
+    expect(attendance.getCell('A6').text).toBe('Alice Example')
+    expect(attendance.getCell('B6').text).toBe('*08:00:00')
+    expect(attendance.getCell('C6').text).toBe('19:30')
+    expect(attendance.getCell('D6').text).toBe('09:30')
+    expect(attendance.getCell('F6').text).toBe('*08:00:00')
+    expect(attendance.getCell('G6').text).toBe('*17:30:00')
+    expect(attendance.getCell('P6').value).toBe(1)
+    expect((attendance.getCell('C6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FF8EE07E')
+    expect((attendance.getCell('D6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FFFFC000')
+    expect((attendance.getCell('E6').fill as ExcelJS.FillPattern).fgColor?.argb).toBe('FFFF0000')
+    expect(attendance.getCell('A8').fill?.type).toBe('pattern')
+    expect(attendance.getCell('B8').text).toBe('very late')
+    expect(attendance.views[0]).toMatchObject({ state: 'frozen', ySplit: 5, xSplit: 1 })
+    expect(attendance.pageSetup.orientation).toBe('landscape')
+    expect(attendance.pageSetup.fitToWidth).toBe(1)
+    expect(attendance.pageSetup.printArea).toMatch(/^A1:/)
 
     const pdfBytes = createAttendancePdf(report)
     const pdfPath = '/tmp/mmrjd-weekly-report-fixture.pdf'
@@ -175,10 +189,30 @@ describe('attendance report dataset and actual exports', () => {
     expect(extracted).toContain('TEST-001')
     expect(extracted).toContain('Alice Example')
     expect(extracted).toContain('Very late')
-    expect(extracted).toContain('Direction unknown')
+    expect(extracted).toContain('Calculation missing')
     expect(extracted).toContain('Page 1 of')
     expect(extracted).toContain('fixture-original-records.pdf')
     expect(extracted).not.toContain('TEST-999')
+  })
+
+  it('shows source identities in the manual grid even when they are not linked to roster employees', async () => {
+    const input = structuredClone(reportInput)
+    input.employees = []
+    input.evidence = input.evidence.filter((item) => item.sourceType === 'ivms_pdf_original_records').map((item) => ({ ...item, employeeId: null }))
+    input.calculations = []
+    input.corrections = []
+    input.reviews = input.reviews.filter((item) => item.importId === 'import-pdf')
+    input.imports = input.imports.filter((item) => item.id === 'import-pdf')
+    const report = buildAttendanceReport(input)
+    const bytes = await createAttendanceWorkbook(report)
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
+    const attendance = workbook.getWorksheet('Attendance Sheet')!
+    expect(report.summary.employeesIncluded).toBe(0)
+    expect(attendance.getCell('A4').text).toBe('Employees Names')
+    expect(attendance.getCell('A6').text).toBe('Alice Example')
+    expect(attendance.getCell('F6').text).toBe('*08:00:00')
+    expect(attendance.getCell('G6').text).toBe('*17:30:00')
   })
 
   it('denies unauthenticated report export before querying report data', async () => {
@@ -216,7 +250,26 @@ describe('attendance report dataset and actual exports', () => {
     expect([...bytes.subarray(0, 2)]).toEqual([0x50, 0x4b])
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0])
-    expect(workbook.getWorksheet('Weekly Attendance')?.getCell('F8').text).toBeTruthy()
-    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Weekly Attendance', 'Attendance Summary', 'Review & Exceptions', 'Report Metadata'])
+    expect(workbook.getWorksheet('Attendance Sheet')?.getCell('A4').text).toBe('Employees Names')
+    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Attendance Sheet'])
+  })
+
+  it('serves PDF report requests as a readable PDF attachment', async () => {
+    authMocks.getAdministratorProfile.mockResolvedValueOnce({ id: 'admin-1' })
+    authMocks.loadAttendanceReportInput.mockResolvedValueOnce(reportInput)
+    const { GET } = await import('../../app/api/reports/weekly/route')
+    const response = await GET(new Request('http://localhost/api/reports/weekly?importId=00000000-0000-4000-8000-000000000001&from=2026-10-26&to=2026-11-01&format=pdf'))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/pdf')
+    expect(response.headers.get('content-disposition')).toMatch(/\.pdf"/)
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    expect(new TextDecoder().decode(bytes.subarray(0, 8))).toContain('%PDF-1.')
+    const pdf = await getDocument({ data: bytes }).promise
+    expect(pdf.numPages).toBeGreaterThan(0)
+    const page = await pdf.getPage(1)
+    const content = await page.getTextContent()
+    const text = content.items.map((item) => 'str' in item ? item.str : '').join(' ')
+    expect(text).toContain('Weekly Employee Attendance Report')
+    expect(text).toContain('TEST-001')
   })
 })

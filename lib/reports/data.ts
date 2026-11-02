@@ -77,7 +77,7 @@ export async function loadAttendanceReportInput(from: string, to: string, import
   const sourceTable = selectedImport.source_type === 'ivms_pdf_original_records' ? 'raw_fingerprint_events' : 'organized_attendance_entries'
   const { count: totalSourceRecords, error: countError } = await supabase.from(sourceTable).select('id', { count: 'exact', head: true }).eq('import_id', importId)
   if (countError) throw new Error('The selected import record count could not be verified.')
-  if (!totalSourceRecords) throw new Error('This import is marked processed but contains no persisted source records. Reprocess or inspect the import before exporting.')
+  if (!totalSourceRecords) throw new Error('No extracted attendance events are saved for this import in the database. The file may be a valid iVMS export, but its status alone does not prove event persistence. Go to Import attendance and use Resume / check before exporting.')
 
   const [employeeRows, departmentRows, ruleRows, allCalculationRows, organizedRows, rawRows] = await Promise.all([
     fetchAll((startAt, endAt) => supabase.from('employees').select('id, employee_number, full_name, department_id').order('employee_number').range(startAt, endAt)),

@@ -101,7 +101,6 @@ export function buildPreviewSummary(parsed: ParsedAttendanceImport, matches: Ide
 }
 
 const confirmationBlockingIssues = new Set([
-  'month_label_conflict',
   'year_label_conflict',
   'ambiguous_work_date',
   'invalid_work_date',

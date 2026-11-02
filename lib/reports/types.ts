@@ -103,6 +103,8 @@ export type ReportDayCell = {
   lastRecorded: string | null
   inTimes: string[]
   outTimes: string[]
+  inStatus: 'normal' | 'late' | 'very_late' | 'absent' | 'blank' | 'review'
+  outStatus: 'normal' | 'overtime' | 'absent' | 'blank' | 'review'
   sourceInValues: string[]
   sourceOutValues: string[]
   eventTimes: string[]
@@ -124,8 +126,25 @@ export type ReportEmployeeRow = {
     overtimeDays: number
     incompleteDays: number
     noSourceRecordDays: number
+    absentMarks: number
     reviewExceptions: number
   }
+}
+
+export type ManualAttendanceDay = {
+  date: string
+  inTime: string | null
+  outTime: string | null
+  inStatus: 'normal' | 'late' | 'very_late' | 'absent' | 'blank' | 'review'
+  outStatus: 'normal' | 'overtime' | 'absent' | 'blank' | 'review'
+  hasEvidence: boolean
+}
+
+export type ManualAttendanceRow = {
+  sourceEmployeeNumber: string | null
+  employeeName: string
+  days: ManualAttendanceDay[]
+  absentCount: number
 }
 
 export type AttendanceReport = {
@@ -143,6 +162,7 @@ export type AttendanceReport = {
   rules: ReportRule[]
   imports: ReportImport[]
   employees: ReportEmployeeRow[]
+  manualAttendanceRows: ManualAttendanceRow[]
   exceptions: ReportException[]
   fingerprintEvidence: ReportEvidence[]
   summary: {
@@ -150,6 +170,7 @@ export type AttendanceReport = {
     attendanceDaysCalculated: number
     daysWithEvidence: number
     noSourceRecordDays: number
+    absentMarks: number
     lateDays: number
     veryLateDays: number
     verifiedOvertimeDays: number

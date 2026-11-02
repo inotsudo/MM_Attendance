@@ -252,7 +252,7 @@ export async function parseOrganizedExcel(bytes: Uint8Array): Promise<ParsedAtte
         if (group.inColumns.length > 1 || group.outColumns.length > 1) hasDuplicateDirection = true
       }
     }
-    if (hasMonthConflict) warnings.push({ code: 'month_label_conflict', severity: 'error', message: `Worksheet “${sheet.name}” has a month label that conflicts with its actual date headings. Correct the workbook month metadata before confirming this import.`, sheet: sheet.name })
+    if (hasMonthConflict) warnings.push({ code: 'month_label_conflict', severity: 'warning', message: `Worksheet “${sheet.name}” has a month label that differs from its attendance date headings. Attendance dates are taken from the actual date headings and year, not the month label.`, sheet: sheet.name })
     if (hasYearConflict) warnings.push({ code: 'year_label_conflict', severity: 'error', message: `Worksheet “${sheet.name}” has a year label that conflicts with its actual date headings. Correct the workbook year metadata before confirming this import.`, sheet: sheet.name })
     if (hasDuplicateDate) warnings.push({ code: 'duplicate_date_heading', severity: 'error', message: `Worksheet “${sheet.name}” repeats one or more attendance dates. Review and correct the date columns before confirming this import.`, sheet: sheet.name })
     if (hasDuplicateDirection) warnings.push({ code: 'duplicate_date_direction', severity: 'error', message: `Worksheet “${sheet.name}” contains repeated IN or OUT columns for a date. Correct the layout before confirming this import.`, sheet: sheet.name })

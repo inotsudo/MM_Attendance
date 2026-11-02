@@ -65,10 +65,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   try {
     const { supabase, record, bytes } = await downloadImport(importId)
-    if (record.processing_status === 'completed') return NextResponse.json({ alreadyCompleted: true, status: 'completed' })
-    if (!['parsed', 'needs_review'].includes(record.processing_status)) return NextResponse.json({ error: 'Preview this file before confirming it.' }, { status: 409 })
+    const countQuery = record.source_type === 'ivms_pdf_original_records'
+      ? await supabase.from('raw_fingerprint_events').select('id', { count: 'exact', head: true }).eq('import_id', importId)
+      : await supabase.from('organized_attendance_entries').select('id', { count: 'exact', head: true }).eq('import_id', importId)
+    if (countQuery.error) throw new Error('Persisted source records could not be verified before confirmation.')
+    const existingRecordCount = countQuery.count ?? 0
+    if (!['parsed', 'needs_review', 'completed'].includes(record.processing_status)) return NextResponse.json({ error: 'Preview this file before confirming it.' }, { status: 409 })
+    if (record.processing_status === 'completed' && existingRecordCount === 0) {
+      return NextResponse.json({ error: 'This import is marked completed but has no saved source records. Select the same original file again to safely retry processing.' }, { status: 409 })
+    }
 
     const parsed = await parseStoredImport(record.source_type, bytes)
+    if (parsed.records.length === 0) throw new Error('No supported attendance records were extracted. The original file remains available for investigation; no successful import was recorded.')
+    if (existingRecordCount > 0) {
+      if (existingRecordCount !== parsed.records.length) {
+        return NextResponse.json({ error: `This import already contains ${existingRecordCount} source records, but re-extraction produced ${parsed.records.length}. Existing evidence was preserved; manual investigation is required before retrying.` }, { status: 409 })
+      }
+      return NextResponse.json({ alreadyCompleted: true, status: record.processing_status, recordCount: existingRecordCount })
+    }
+    if (record.processing_status === 'completed') return NextResponse.json({ error: 'This completed import cannot be replaced automatically.' }, { status: 409 })
     const blockers = getImportConfirmationBlockers(parsed)
     if (blockers.length) {
       return NextResponse.json({
@@ -146,7 +161,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         department: sourceRecord.department,
         timestamp,
         sourceStatus,
-          direction: sourceStatus === 'IN' || sourceStatus === 'OUT' ? sourceStatus : null,
+          // For raw iVMS events, apply the approved Kigali-noon direction rule.
+          // Organized Excel entries keep their explicit IN/OUT columns.
+          direction: record.source_type === 'organized_excel' && (sourceStatus === 'IN' || sourceStatus === 'OUT') ? sourceStatus : null,
         sourceRow: sourceRecord.sourceIndex,
       })
       group.sourceIndices.add(sourceRecord.sourceIndex)
@@ -165,11 +182,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     })
 
     const calculations: Array<Record<string, unknown>> = []
-    if (record.source_type === 'ivms_pdf_original_records' && eventsByEmployeeDate.size > 0) {
-      reviewItems.push(issue('pdf_direction_not_assumed', 'PDF fingerprint events do not reliably identify IN or OUT direction. Original events were retained, but daily attendance was not calculated from inferred first/last events.', undefined, 'warning'))
-    }
     for (const [key, group] of eventsByEmployeeDate) {
-      if (record.source_type === 'ivms_pdf_original_records') continue
       const [employeeId, attendanceDate] = key.split('|')
       const rule = rules.filter((candidate) => candidate.effective_from <= attendanceDate).at(-1)
       if (!rule || rule.attendance_timezone !== 'Africa/Kigali') {
@@ -194,7 +207,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         overtimeEvidence: result.overtimeEvidence,
         isWeekend: result.weekend,
         completeness: result.completeness,
-        calculationResult: { engineVersion: 2, rulesVersion: rule.version, sourceEventIds: result.sourceEventIds, reviewIssues: result.reviewIssues },
+        calculationResult: { engineVersion: 3, rulesVersion: rule.version, sourceEventIds: result.sourceEventIds, directionPolicy: 'fingerprint-before-12-kigali-in-after-12-out', reviewIssues: result.reviewIssues },
         sourceIndices,
       })
     }
@@ -210,10 +223,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     })
     if (confirmError) throw new Error(confirmError.message.includes('Could not') ? confirmError.message : 'The import could not be saved atomically. Retry confirmation; no partial evidence was committed.')
     const payload = result as { alreadyCompleted?: boolean; status?: string; recordCount?: number; reviewCount?: number }
+    if (!payload || !['completed', 'needs_review'].includes(payload.status ?? '')) {
+      throw new Error('The database did not return a successful processed status. The import was not reported as complete.')
+    }
+    const persistedQuery = record.source_type === 'ivms_pdf_original_records'
+      ? await supabase.from('raw_fingerprint_events').select('id', { count: 'exact', head: true }).eq('import_id', importId)
+      : await supabase.from('organized_attendance_entries').select('id', { count: 'exact', head: true }).eq('import_id', importId)
+    const confirmedRecordCount = typeof payload?.recordCount === 'number' ? payload.recordCount : payload?.alreadyCompleted ? persistedQuery.count : null
+    if (confirmedRecordCount !== parsed.records.length) {
+      throw new Error('The database did not confirm that every extracted source record was saved. The import was not reported as successful.')
+    }
+    if (persistedQuery.error || persistedQuery.count !== parsed.records.length) {
+      throw new Error('The saved source record count does not match extraction. The original file was retained; inspect this import before reporting it as processed.')
+    }
     return NextResponse.json({
       alreadyCompleted: Boolean(payload.alreadyCompleted),
       status: payload.status,
-      recordCount: payload.recordCount ?? parsed.records.length,
+      recordCount: persistedQuery.count,
       reviewCount: payload.reviewCount ?? reviewItems.length,
       calculationCount: calculations.length,
     })

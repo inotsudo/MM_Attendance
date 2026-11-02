@@ -89,6 +89,16 @@ function weekendDay(date: Date) {
   return weekday === 'Saturday' || weekday === 'Sunday' ? weekday : null
 }
 
+/** Derive iVMS event direction using the approved MM&RJD rule and Kigali time. */
+export function inferFingerprintDirection(timestamp: string): 'IN' | 'OUT' | null {
+  const parsed = toDate(timestamp)
+  if (!parsed) return null
+  const time = localMinutes(parsed)
+  if (time < 12 * 60) return 'IN'
+  if (time > 12 * 60) return 'OUT'
+  return null
+}
+
 function issue(code: ReviewIssue['code'], message: string, eventIds: string[]): ReviewIssue {
   return { code, message, eventIds }
 }
@@ -128,34 +138,37 @@ export function processAttendanceEvents(
     const duplicateIds = sorted.filter((event, index) => index > 0 && event.parsed.getTime() === sorted[index - 1].parsed.getTime()).map((event) => event.id)
     if (duplicateIds.length) reviewIssues.push(issue('duplicate_event', 'Multiple fingerprint events share the same timestamp.', duplicateIds))
     if (!first.employeeId) reviewIssues.push(issue('unmatched_employee', 'The event could not be matched to an employee.', sorted.map((event) => event.id)))
-    const directional = sorted.some((event) => event.direction === 'IN' || event.direction === 'OUT')
-    const inEvents = sorted.filter((event) => event.direction === 'IN')
-    const outEvents = sorted.filter((event) => event.direction === 'OUT')
+    const directions = new Map(sorted.map((event) => [event.id, event.direction ?? inferFingerprintDirection(event.timestamp)]))
+    const directional = sorted.some((event) => directions.get(event.id) === 'IN' || directions.get(event.id) === 'OUT')
+    const inEvents = sorted.filter((event) => directions.get(event.id) === 'IN')
+    const outEvents = sorted.filter((event) => directions.get(event.id) === 'OUT')
+    const unresolvedNoon = sorted.filter((event) => directions.get(event.id) === null)
+    if (unresolvedNoon.length) reviewIssues.push(issue('direction_unknown', 'Fingerprint event at exactly 12:00 cannot be assigned by the before-noon/after-noon rule.', unresolvedNoon.map((event) => event.id)))
     if (directional && inEvents.length === 0) reviewIssues.push(issue('missing_in', 'No explicit IN record was found; arrival cannot be classified.', sorted.map((event) => event.id)))
     if (directional && outEvents.length === 0) reviewIssues.push(issue('missing_out', 'No explicit OUT record was found; the attendance day is incomplete.', sorted.map((event) => event.id)))
-    if (!directional && sorted.length === 1) reviewIssues.push(issue('single_event', 'Only one event was recorded; the working day is incomplete evidence.', [first.id]))
-    else if (!directional) reviewIssues.push(issue('direction_unknown', 'Source events do not establish IN or OUT direction; arrival and completeness are not classified.', sorted.map((event) => event.id)))
+    if (!directional && !unresolvedNoon.length && sorted.length === 1) reviewIssues.push(issue('single_event', 'Only one event was recorded; the working day is incomplete evidence.', [first.id]))
+    else if (!directional && !unresolvedNoon.length) reviewIssues.push(issue('direction_unknown', 'Source events do not establish IN or OUT direction; arrival and completeness are not classified.', sorted.map((event) => event.id)))
 
-    const arrivalEvent = directional ? inEvents[0] : first
+    const arrivalEvent = inEvents[0]
     const firstMinutes = arrivalEvent ? localMinutes(arrivalEvent.parsed) : 0
     const normalStart = minutes(rules.normalStart)
     const graceUntil = minutes(rules.graceUntil)
     const veryLateFrom = minutes(rules.veryLateFrom)
     let arrivalClassification: ArrivalClassification = 'on_time'
-    if (!directional || inEvents.length === 0) arrivalClassification = 'no_event'
+    if (inEvents.length === 0) arrivalClassification = 'no_event'
     else if (firstMinutes < normalStart) arrivalClassification = 'before_start'
     else if (firstMinutes < graceUntil) arrivalClassification = 'on_time'
     else if (firstMinutes < veryLateFrom) arrivalClassification = 'late'
     else arrivalClassification = 'very_late'
 
-    const lastOut = directional ? outEvents.at(-1) : last
+    const lastOut = outEvents.at(-1)
     const weekendName = weekendDay(first.parsed)
     const weekend = weekendName !== null
     const weekendAllowed = weekendName ? rules.weekendOvertimeDays?.includes(weekendName) ?? null : false
     const possibleWeekendOvertime = weekend && lastOut && localMinutes(lastOut.parsed) >= minutes(rules.overtimeFrom)
     if (possibleWeekendOvertime && weekendAllowed === null) reviewIssues.push(issue('weekend_overtime_policy_unconfigured', 'A weekend event reached the overtime threshold, but the applicable weekend overtime policy is not configured.', [lastOut.id]))
     const overtimeEvidence = Boolean(lastOut && localMinutes(lastOut.parsed) >= minutes(rules.overtimeFrom) && (!weekend || weekendAllowed === true))
-    const completeEvidence = directional && inEvents.length > 0 && outEvents.length > 0
+    const completeEvidence = inEvents.length > 0 && outEvents.length > 0
 
     results.push({
       employeeId: first.employeeId,

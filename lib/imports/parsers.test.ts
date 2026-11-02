@@ -4,12 +4,18 @@ vi.mock('server-only', () => ({}))
 import ExcelJS from 'exceljs'
 import { parseOrganizedExcel } from './excel-parser'
 import { parseIvmsPageItems, parseIvmsPdf, pdfOpenErrorMessage } from './pdf-parser'
-import { kigaliIso, parseSourceDateTime } from './time'
+import { kigaliIso, normalizeEmployeeNumber, parseSourceDateTime } from './time'
 import { annotateDuplicates, findIdentityMatches, getImportConfirmationBlockers } from './preview'
 import type { ParsedAttendanceImport } from './types'
 import type { PdfAttendanceRecord, ExcelAttendanceRecord } from './types'
 
 describe('attendance source parsers', () => {
+  it('matches iVMS IDs with Excel apostrophe text markers without altering source values', () => {
+    expect(normalizeEmployeeNumber("'2")).toBe('2')
+    expect(normalizeEmployeeNumber('’002’')).toBe('002')
+    expect(normalizeEmployeeNumber('EMP-02')).toBe('EMP-02')
+  })
+
   it('extracts a representative iVMS Original Records event and wrapped checkpoint text', async () => {
     const fixture = new Uint8Array(await readFile(new URL('./__fixtures__/ivms-original-records-sample.pdf', import.meta.url)))
     const result = await parseIvmsPdf(fixture)
@@ -80,7 +86,8 @@ describe('attendance source parsers', () => {
     expect(records[1].sourceIn).toBeNull()
     expect(records[1].sourceOut).toBeNull()
     expect(result.warnings.some((warning) => warning.code === 'month_label_conflict')).toBe(true)
-    expect(getImportConfirmationBlockers(result).some((warning) => warning.code === 'month_label_conflict')).toBe(true)
+    expect(result.warnings.find((warning) => warning.code === 'month_label_conflict')?.severity).toBe('warning')
+    expect(getImportConfirmationBlockers(result).some((warning) => warning.code === 'month_label_conflict')).toBe(false)
   })
 
   it('blocks ambiguous date headings and flags invalid times without normalizing them', async () => {

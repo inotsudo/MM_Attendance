@@ -2,7 +2,7 @@ import type { ReportDayCell } from './types'
 
 export function reportDayStatus(day: ReportDayCell) {
   if (day.kind === 'no_records') return 'No source records'
-  if (day.kind === 'fingerprint_events') return 'Direction unknown'
+  if (day.kind === 'fingerprint_events') return 'Calculation missing · reprocess import'
   if (day.kind === 'stale') return 'Stale · review'
   if (day.kind === 'organized_evidence') return 'Incomplete · review'
 

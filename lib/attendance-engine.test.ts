@@ -43,17 +43,40 @@ describe('processAttendanceEvents', () => {
 
   it('identifies weekend events', () => expect(resultAt('08:00', '2024-10-19').weekend).toBe(true))
 
-  it('does not infer arrival or completeness from direction-unknown events', () => {
+  it('derives IN before noon and OUT after noon from iVMS fingerprint events', () => {
     const result = processAttendanceEvents([event('a', 'EMP-1', '2024-10-14T08:00:00'), event('b', 'EMP-1', '2024-10-14T17:30:00')])[0]
+    expect(result.arrivalClassification).toBe('on_time')
+    expect(result.completeness).toBe('complete_evidence')
+    expect(result.reviewIssues.map((item) => item.code)).not.toContain('direction_unknown')
+  })
+
+  it('uses the earliest pre-noon arrival and latest post-noon departure across repeated events', () => {
+    const result = processAttendanceEvents([
+      event('in-earliest', 'EMP-1', '2024-10-14T07:30:00'),
+      event('in-repeat', 'EMP-1', '2024-10-14T08:40:00'),
+      event('out-first', 'EMP-1', '2024-10-14T12:30:00'),
+      event('out-latest', 'EMP-1', '2024-10-14T19:45:00'),
+    ])[0]
+    expect(result.firstRecordedEvent).toContain('07:30')
+    expect(result.lastRecordedEvent).toContain('19:45')
+    expect(result.arrivalClassification).toBe('before_start')
+    expect(result.overtimeEvidence).toBe(true)
+    expect(result.completeness).toBe('complete_evidence')
+    expect(result.sourceEventIds).toHaveLength(4)
+  })
+
+  it('flags a single pre-noon event as IN with missing OUT evidence', () => {
+    const result = processAttendanceEvents([event('only', 'EMP-1', '2024-10-14T08:00:00')])[0]
+    expect(result.completeness).toBe('incomplete_evidence')
+    expect(result.arrivalClassification).toBe('on_time')
+    expect(result.reviewIssues.map((item) => item.code)).toContain('missing_out')
+  })
+
+  it('leaves exactly noon unresolved and retains it as a review item', () => {
+    const result = processAttendanceEvents([event('noon', 'EMP-1', '2024-10-14T12:00:00')])[0]
     expect(result.arrivalClassification).toBe('no_event')
     expect(result.completeness).toBe('incomplete_evidence')
     expect(result.reviewIssues.map((item) => item.code)).toContain('direction_unknown')
-  })
-
-  it('flags a single event as incomplete evidence', () => {
-    const result = processAttendanceEvents([event('only', 'EMP-1', '2024-10-14T08:00:00')])[0]
-    expect(result.completeness).toBe('incomplete_evidence')
-    expect(result.reviewIssues[0].code).toBe('single_event')
   })
 
   it('returns invalid timestamps for review instead of dropping them', () => {

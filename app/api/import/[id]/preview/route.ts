@@ -14,8 +14,14 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
   try {
     const { supabase, record, bytes } = await downloadImport(id)
+    const persisted = record.source_type === 'ivms_pdf_original_records'
+      ? await supabase.from('raw_fingerprint_events').select('id', { count: 'exact', head: true }).eq('import_id', id)
+      : await supabase.from('organized_attendance_entries').select('id', { count: 'exact', head: true }).eq('import_id', id)
+    if (persisted.error) throw new Error('Existing source records could not be checked before preview.')
+    if ((persisted.count ?? 0) > 0) return NextResponse.json({ error: `This import already has ${persisted.count} persisted source records. Preview will not change its processed status.` }, { status: 409 })
     const parsed = await parseStoredImport(record.source_type, bytes)
     if (parsed.records.length > 10_000) throw new Error('This file contains more than 10,000 attendance rows. Split it into smaller source files and upload each part.')
+    if (parsed.records.length === 0) throw new Error('The file was readable, but no supported attendance records were extracted. The original remains in private storage; export a valid iVMS Original Records report and retry.')
     const duplicateCount = annotateDuplicates(parsed)
     const { data: employeeRows, error: employeeError } = await supabase
       .from('employees')
@@ -27,7 +33,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     const employees: EmployeeOption[] = (employeeRows ?? []).map((employee) => ({ id: employee.id, employeeNumber: employee.employee_number, fullName: employee.full_name }))
     const matches = findIdentityMatches(parsed, employees)
     const hasWarnings = parsed.warnings.length > 0 || parsed.records.some((recordItem) => recordItem.warnings.length > 0) || matches.some((match) => match.matchStatus !== 'matched')
-    const status = hasWarnings ? 'needs_review' : 'parsed'
+    const status = 'parsed'
     const { error: statusError } = await supabase.from('attendance_imports').update({ processing_status: status, processing_error: null }).eq('id', id)
     if (statusError) throw new Error('The preview was extracted but its status could not be saved.')
     return NextResponse.json({
@@ -35,6 +41,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
       fileName: record.original_filename,
       sourceType: record.source_type,
       status,
+      reviewStatus: hasWarnings ? 'needs_review' : 'ready_to_confirm',
       summary: buildPreviewSummary(parsed, matches, duplicateCount),
       warnings: parsed.warnings,
       matches,

@@ -1,189 +1,197 @@
 import ExcelJS from 'exceljs'
-import { formatKigaliDateTime } from './dataset'
-import { reportDayStatus } from './day-status'
-import type { AttendanceReport, ReportDayCell } from './types'
+import type { AttendanceReport, ManualAttendanceDay } from './types'
 
-const navy = '27345B'
-const purple = '7058A4'
-const pale = 'F3F1F8'
-const border = 'D9D6E2'
-
-function dayFill(day: ReportDayCell) {
-  if (day.kind === 'no_records' || day.kind === 'stale' || day.overtime === 'Unverified') return 'FFF0E5'
-  if (day.classification === 'Very late') return 'FCE4E4'
-  if (day.classification === 'Late') return 'FFF4D6'
-  if (day.kind === 'fingerprint_events') return 'E9F1FA'
-  return 'EAF5EC'
+const colors = {
+  navy: '305A9F',
+  titleBlue: '315A9F',
+  paleBlue: 'D9E2F3',
+  gridBlue: 'B4C7E7',
+  red: 'FFFF0000',
+  yellow: 'FFFFFF00',
+  orange: 'FFFFC000',
+  green: 'FF8EE07E',
+  gray: 'D9D9D9',
+  review: 'FFFFE699',
+  white: 'FFFFFFFF',
 }
 
-function styleHeader(row: ExcelJS.Row) {
-  row.height = 30
-  row.eachCell((cell) => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-    cell.font = { name: 'Aptos', size: 10, bold: true, color: { argb: 'FFFFFF' } }
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
-    cell.border = { bottom: { style: 'medium', color: { argb: purple } } }
-  })
+function fill(argb: string): ExcelJS.Fill {
+  return { type: 'pattern', pattern: 'solid', fgColor: { argb: argb.length === 6 ? `FF${argb}` : argb } }
 }
 
-function setPrintLayout(sheet: ExcelJS.Worksheet, titleRows: string) {
-  sheet.views = [{ state: 'frozen', ySplit: Number(titleRows.split(':')[1] ?? titleRows), xSplit: 3 }]
-  sheet.pageSetup = { orientation: 'landscape', paperSize: 8 as ExcelJS.PaperSize, fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalDpi: 300, verticalDpi: 300, margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
-  sheet.pageSetup.printTitlesRow = titleRows
-  sheet.headerFooter.oddFooter = '&LMM&RJD&CConfidential attendance information&RPage &P of &N'
+function border(color = colors.gridBlue, style: ExcelJS.BorderStyle = 'thin'): Partial<ExcelJS.Borders> {
+  const edge = { style, color: { argb: color } }
+  return { top: edge, bottom: edge, left: edge, right: edge }
+}
+
+function statusColor(day: ManualAttendanceDay, side: 'in' | 'out') {
+  const status = side === 'in' ? day.inStatus : day.outStatus
+  if (status === 'absent') return colors.red
+  if (status === 'late') return colors.yellow
+  if (status === 'very_late') return colors.orange
+  if (status === 'overtime') return colors.green
+  if (status === 'review') return colors.review
+  if (!day.hasEvidence) return colors.paleBlue
+  return colors.white
+}
+
+function styleCell(cell: ExcelJS.Cell, args: { fill?: string; bold?: boolean; color?: string; size?: number; rotation?: number; horizontal?: 'left' | 'center' | 'right'; borderColor?: string } = {}) {
+  cell.fill = fill(args.fill ?? colors.white)
+  cell.font = { name: 'Calibri', size: args.size ?? 10, bold: args.bold ?? false, color: { argb: args.color ?? 'FF202020' } }
+  cell.alignment = { horizontal: args.horizontal ?? 'center', vertical: 'middle', wrapText: true, ...(args.rotation == null ? {} : { textRotation: args.rotation }) }
+  cell.border = border(args.borderColor ?? colors.gridBlue)
+}
+
+function displayMonth(report: AttendanceReport) {
+  const first = new Date(`${report.metadata.periodStart}T12:00:00Z`)
+  const last = new Date(`${report.metadata.periodEnd}T12:00:00Z`)
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'long' })
+  const start = formatter.format(first)
+  const end = formatter.format(last)
+  return start === end ? start : `${start}–${end}`
+}
+
+function dateLabel(date: string) {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const [year, month, day] = date.split('-').map(Number)
+  return `${day}/${months[month - 1]}`
 }
 
 export async function createAttendanceWorkbook(report: AttendanceReport) {
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'MM&RJD Attendance'
-  workbook.subject = report.metadata.title
-  workbook.title = `${report.metadata.title} ${report.metadata.periodStart} to ${report.metadata.periodEnd}`
+  workbook.subject = 'Prepared weekly attendance sheet'
+  workbook.title = `Attendance Sheet ${report.metadata.periodStart} to ${report.metadata.periodEnd}`
   workbook.created = new Date(report.metadata.generatedAt)
   workbook.modified = new Date(report.metadata.generatedAt)
 
-  const weekly = workbook.addWorksheet('Weekly Attendance', { views: [{ state: 'frozen', ySplit: 7, xSplit: 3 }] })
-  const summaryColumns = ['Calculated days', 'Evidence days', 'Late days', 'Very late days', 'Verified OT days', 'Incomplete days', 'No source record days', 'Absences (not assessed)', 'Review items']
-  const dailyColumns = 3
-  const dailyStart = 4
-  const summaryStart = dailyStart + report.dates.length * dailyColumns
-  const lastColumn = summaryStart - 1 + summaryColumns.length
-  weekly.mergeCells(1, 1, 1, lastColumn)
-  weekly.getCell(1, 1).value = 'MM&RJD | Weekly Employee Attendance Report'
-  weekly.getCell(1, 1).font = { name: 'Aptos Display', size: 18, bold: true, color: { argb: 'FFFFFF' } }
-  weekly.getCell(1, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-  weekly.getCell(1, 1).alignment = { vertical: 'middle' }
-  weekly.getRow(1).height = 34
-  for (const [row, text] of [[2, `Reporting period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`], [3, `Generated: ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}) | UTC: ${report.metadata.generatedAt}`], [4, `Employees: ${report.summary.employeesIncluded} | Calculated days: ${report.summary.attendanceDaysCalculated} | No source record days: ${report.summary.noSourceRecordDays} | Late: ${report.summary.lateDays} | Very late: ${report.summary.veryLateDays} | Verified overtime: ${report.summary.verifiedOvertimeDays} | Incomplete: ${report.summary.incompleteDays} | Review exceptions: ${report.summary.reviewExceptions}`], [5, 'No source records are not verified absences. Absence totals are not assessed because no work calendar is configured. PDF fingerprint events are not assigned IN/OUT direction.']] as const) {
-    weekly.mergeCells(row, 1, row, lastColumn)
-    weekly.getCell(row, 1).value = text
-    weekly.getCell(row, 1).font = { name: 'Aptos', size: row === 5 ? 9 : 10, italic: row === 5, color: { argb: row === 5 ? '8A5A22' : '43415A' } }
-    weekly.getCell(row, 1).alignment = { vertical: 'middle', wrapText: true }
-    weekly.getRow(row).height = row === 5 ? 27 : 22
-  }
-  weekly.mergeCells('A6:A7'); weekly.mergeCells('B6:B7'); weekly.mergeCells('C6:C7')
-  weekly.getCell('A6').value = 'Employee ID'; weekly.getCell('B6').value = 'Employee name'; weekly.getCell('C6').value = 'Department'
-  report.dates.forEach((date, index) => {
-    const start = dailyStart + index * dailyColumns
-    weekly.mergeCells(6, start, 6, start + 2)
-    weekly.getCell(6, start).value = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00Z`))
-    weekly.getCell(7, start).value = 'IN'; weekly.getCell(7, start + 1).value = 'OUT'; weekly.getCell(7, start + 2).value = 'Daily status'
+  const sheet = workbook.addWorksheet('Attendance Sheet', {
+    properties: { tabColor: { argb: `FF${colors.titleBlue}` }, defaultRowHeight: 22 },
+    views: [{ state: 'frozen', ySplit: 5, xSplit: 1, showGridLines: false, zoomScale: 90 }],
   })
-  summaryColumns.forEach((label, index) => {
-    const column = summaryStart + index
-    weekly.getCell(7, column).value = label
-  })
-  styleHeader(weekly.getRow(6)); styleHeader(weekly.getRow(7))
-  weekly.getRow(6).height = 27; weekly.getRow(7).height = 22
-  weekly.columns = [
-    { width: 15 }, { width: 24 }, { width: 18 },
-    ...report.dates.flatMap(() => [{ width: 12 }, { width: 12 }, { width: 25 }]),
-    ...summaryColumns.map(() => ({ width: 15 })),
+  sheet.columns = [
+    { width: 27.5 },
+    ...report.dates.flatMap(() => [{ width: 8.65 }, { width: 8.65 }]),
+    { width: 15.5 },
   ]
-  for (const employee of report.employees) {
-    const values: (string | number | null)[] = [employee.employee.employeeNumber, employee.employee.fullName, employee.employee.department ?? '—']
-    for (const day of employee.days) {
-      const inValue = day.sourceInValues.join('\n') || (day.kind === 'calculated' ? day.inTimes.join('\n') : '')
-      const outValue = day.sourceOutValues.join('\n') || (day.kind === 'calculated' ? day.outTimes.join('\n') : '')
-      values.push(inValue, outValue, reportDayStatus(day))
-    }
-    values.push(employee.totals.calculatedDays, employee.totals.evidenceDays, employee.totals.lateDays, employee.totals.veryLateDays, employee.totals.overtimeDays, employee.totals.incompleteDays, employee.totals.noSourceRecordDays, 'Not assessed', employee.totals.reviewExceptions)
-    const row = weekly.addRow(values)
-    row.height = 63
-    row.eachCell((cell, column) => {
-      cell.font = { name: 'Aptos', size: 9, color: { argb: '343243' } }
-      cell.alignment = { vertical: 'middle', horizontal: column >= dailyStart && column < summaryStart ? 'center' : 'left', wrapText: true }
-      cell.border = { bottom: { style: 'hair', color: { argb: border } } }
-      if (column >= dailyStart && column < summaryStart) {
-        const day = employee.days[Math.floor((column - dailyStart) / dailyColumns)]
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dayFill(day) } }
-      } else if (column <= 3) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FAF9FC' } }
-    })
-  }
-  const finalWeeklyRow = Math.max(8, weekly.rowCount)
-  if (report.employees.length) weekly.addConditionalFormatting({
-    ref: `${weekly.getColumn(summaryStart).letter}8:${weekly.getColumn(lastColumn).letter}${finalWeeklyRow}`,
-    rules: [{ type: 'expression', formulae: [`AND(ISNUMBER(${weekly.getColumn(summaryStart).letter}8),${weekly.getColumn(summaryStart).letter}8>0)`], priority: 1, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4D6' } }, font: { color: { argb: '8A6414' }, bold: true } } }],
+  const lastColumn = 2 + report.dates.length * 2
+  const absentColumn = lastColumn
+
+  sheet.getRow(1).height = 34
+  sheet.mergeCells(1, 1, 1, lastColumn)
+  const title = sheet.getCell(1, 1)
+  title.value = 'MM&RJD  |  Weekly Employee Attendance Sheet'
+  styleCell(title, { fill: '263A68', color: colors.white, bold: true, size: 16, horizontal: 'left', borderColor: '263A68' })
+  title.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 }
+  sheet.getRow(2).height = 30
+  sheet.mergeCells(2, 1, 2, 3)
+  sheet.mergeCells(2, 4, 2, Math.min(8, lastColumn - 4))
+  sheet.mergeCells(2, 9, 2, 11)
+  sheet.mergeCells(2, 12, 2, lastColumn)
+  const monthLabel = sheet.getCell(2, 1)
+  monthLabel.value = 'Month'
+  styleCell(monthLabel, { fill: colors.paleBlue, size: 12 })
+  const monthValue = sheet.getCell(2, 4)
+  monthValue.value = displayMonth(report)
+  styleCell(monthValue, { fill: colors.titleBlue, color: colors.white, size: 12 })
+  const yearLabel = sheet.getCell(2, 9)
+  yearLabel.value = 'Year'
+  styleCell(yearLabel, { fill: colors.gray, size: 12 })
+  const yearValue = sheet.getCell(2, 12)
+  yearValue.value = report.metadata.periodStart.slice(0, 4) === report.metadata.periodEnd.slice(0, 4)
+    ? report.metadata.periodStart.slice(0, 4)
+    : `${report.metadata.periodStart.slice(0, 4)}–${report.metadata.periodEnd.slice(0, 4)}`
+  styleCell(yearValue, { fill: colors.titleBlue, color: colors.white, size: 12 })
+  sheet.getRow(3).height = 24
+  sheet.mergeCells(3, 1, 3, lastColumn)
+  const context = sheet.getCell(3, 1)
+  context.value = `Reporting period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}  |  Generated: ${new Intl.DateTimeFormat('en-GB', { timeZone: report.metadata.timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(report.metadata.generatedAt))} (${report.metadata.timezone})  |  Attendance identities: ${report.manualAttendanceRows.length}`
+  styleCell(context, { fill: 'F3F6FC', color: '34415F', size: 9, horizontal: 'left', borderColor: 'D5DEEE' })
+  context.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 }
+
+  sheet.getRow(4).height = 40
+  sheet.getRow(5).height = 22
+  sheet.mergeCells('A4:A5')
+  sheet.getCell('A4').value = 'Employees Names'
+  styleCell(sheet.getCell('A4'), { fill: colors.titleBlue, color: colors.white, bold: true, size: 12, borderColor: 'FFFFFFFF' })
+  report.dates.forEach((date, index) => {
+    const firstColumn = 2 + index * 2
+    const heading = sheet.getCell(4, firstColumn)
+    heading.value = dateLabel(date)
+    styleCell(heading, { fill: colors.white, bold: true, size: 11, rotation: 90 })
+    styleCell(sheet.getCell(4, firstColumn + 1), { fill: colors.white, bold: true, size: 11 })
+    sheet.getCell(5, firstColumn).value = 'IN'
+    sheet.getCell(5, firstColumn + 1).value = 'OUT'
+    styleCell(sheet.getCell(5, firstColumn), { fill: colors.white, size: 11 })
+    styleCell(sheet.getCell(5, firstColumn + 1), { fill: colors.white, size: 11 })
   })
-  if (!report.employees.length) {
-    const row = weekly.addRow(['No matched employee has attendance evidence in this selected import and reporting period; see Review & Exceptions for unmatched source records.'])
-    weekly.mergeCells(row.number, 1, row.number, lastColumn)
-  }
-  if (report.employees.length) weekly.autoFilter = { from: 'A7', to: `${weekly.getColumn(lastColumn).letter}${weekly.rowCount}` }
-  setPrintLayout(weekly, '1:7')
-  weekly.pageSetup.fitToWidth = 2
-  weekly.pageSetup.printTitlesColumn = 'A:C'
+  sheet.getCell(4, absentColumn).value = 'no of absent'
+  sheet.getCell(5, absentColumn).value = 'no'
+  styleCell(sheet.getCell(4, absentColumn), { fill: colors.white, size: 12, borderColor: 'FF00B050' })
+  styleCell(sheet.getCell(5, absentColumn), { fill: colors.white, size: 11, borderColor: 'FF00B050' })
 
-  const summary = workbook.addWorksheet('Attendance Summary')
-  summary.addRow(['MM&RJD | Attendance Summary'])
-  summary.mergeCells('A1:L1')
-  summary.getCell('A1').font = { name: 'Aptos Display', size: 16, bold: true, color: { argb: 'FFFFFF' } }
-  summary.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-  summary.addRow([`Period ${report.metadata.periodStart} to ${report.metadata.periodEnd} | Generated ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}) | UTC ${report.metadata.generatedAt}`])
-  summary.mergeCells('A2:L2')
-  summary.addRow(['Employee ID', 'Employee name', 'Department', 'Calculated days', 'Days with evidence', 'Late days', 'Very late days', 'Verified overtime days', 'Incomplete days', 'No source record days', 'Absences (not assessed)', 'Review exceptions'])
-  styleHeader(summary.getRow(3))
-  for (const row of report.employees) summary.addRow([row.employee.employeeNumber, row.employee.fullName, row.employee.department ?? '—', row.totals.calculatedDays, row.totals.evidenceDays, row.totals.lateDays, row.totals.veryLateDays, row.totals.overtimeDays, row.totals.incompleteDays, row.totals.noSourceRecordDays, 'Not assessed', row.totals.reviewExceptions])
-  const summaryLastEmployeeRow = summary.rowCount
-  summary.addRow(['TOTAL', '', '', report.summary.attendanceDaysCalculated, report.summary.daysWithEvidence, report.summary.lateDays, report.summary.veryLateDays, report.summary.verifiedOvertimeDays, report.summary.incompleteDays, report.employees.reduce((sum, row) => sum + row.totals.noSourceRecordDays, 0), 'Not assessed', report.summary.reviewExceptions])
-  summary.columns = [{ width: 16 }, { width: 27 }, { width: 20 }, ...Array.from({ length: 9 }, () => ({ width: 19 }))]
-  summary.autoFilter = { from: 'A3', to: `L${Math.max(3, summaryLastEmployeeRow)}` }
-  setPrintLayout(summary, '1:3')
-
-  const exceptions = workbook.addWorksheet('Review & Exceptions')
-  exceptions.addRow(['Review items and exceptions'])
-  exceptions.mergeCells('A1:F1')
-  exceptions.getCell('A1').font = { name: 'Aptos Display', size: 16, bold: true, color: { argb: 'FFFFFF' } }
-  exceptions.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-  exceptions.addRow(['Severity', 'Employee ID', 'Employee name', 'Date', 'Source', 'Explanation'])
-  styleHeader(exceptions.getRow(2))
-  for (const item of report.exceptions) exceptions.addRow([item.severity.toUpperCase(), item.employeeNumber ?? '—', item.employeeName ?? '—', item.date ?? '—', item.source ?? '—', item.explanation])
-  exceptions.addRow([])
-  const sectionRow = exceptions.rowCount + 1
-  exceptions.addRow(['Original fingerprint events (direction is not inferred)'])
-  exceptions.mergeCells(sectionRow, 1, sectionRow, 9)
-  exceptions.getCell(sectionRow, 1).font = { bold: true, color: { argb: purple }, size: 12 }
-  const evidenceHeaderRow = exceptions.rowCount + 1
-  exceptions.addRow(['Employee ID', 'Employee name', 'Department', 'Date', 'Recorded time', 'Source status', 'Checkpoint', 'Import file', 'Page / row'])
-  styleHeader(exceptions.getRow(evidenceHeaderRow))
-  const importName = new Map(report.imports.map((item) => [item.id, item.filename]))
-  for (const item of report.fingerprintEvidence) exceptions.addRow([item.employeeNumber ?? '—', item.employeeName ?? '—', item.department ?? '—', item.date ?? '—', item.timestamp ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', dateStyle: 'short', timeStyle: 'short' }).format(new Date(item.timestamp)) : item.sourceTimestampText ?? 'Invalid timestamp', item.attendanceStatus ?? '—', item.checkpoint ?? '—', importName.get(item.importId) ?? item.importId, `${item.sourcePage ?? '—'} / ${item.sourceRow ?? '—'}`])
-  exceptions.columns = [{ width: 12 }, { width: 16 }, { width: 24 }, { width: 14 }, { width: 24 }, { width: 22 }, { width: 32 }, { width: 34 }, { width: 12 }]
-  exceptions.autoFilter = report.exceptions.length ? { from: 'A2', to: `F${report.exceptions.length + 2}` } : undefined
-  setPrintLayout(exceptions, '1:2')
-  exceptions.views = [{ state: 'frozen', ySplit: 2 }]
-
-  const metadata = workbook.addWorksheet('Report Metadata')
-  metadata.addRow(['Report metadata'])
-  metadata.mergeCells('A1:D1')
-  metadata.getCell('A1').font = { name: 'Aptos Display', size: 16, bold: true, color: { argb: 'FFFFFF' } }
-  metadata.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-  metadata.addRows([
-    ['Organization', report.metadata.organization], ['Report title', report.metadata.title], ['Reporting period', `${report.metadata.periodStart} to ${report.metadata.periodEnd}`],
-    ['Generated at (Africa/Kigali)', formatKigaliDateTime(report.metadata.generatedAt)], ['Generated at (UTC)', report.metadata.generatedAt], ['Organization timezone', report.metadata.timezone], ['Report generation ID', report.metadata.reportId],
-    ['Roster basis', report.metadata.rosterBasis], ['Employees included', report.summary.employeesIncluded], ['Attendance engine version', '2 (persisted calculations only)'],
-    ['Source records found in period', report.diagnostics.sourceRecordsFound], ['Valid source records', report.diagnostics.validSourceRecords], ['Invalid source records', report.diagnostics.invalidSourceRecords],
-    ['Matched employees', report.diagnostics.matchedEmployees], ['Unmatched source records', report.diagnostics.unmatchedRecords], ['Calculated employee-days', report.diagnostics.calculatedEmployeeDays],
-    ['Incomplete employee-days', report.diagnostics.incompleteEmployeeDays], ['Review exceptions', report.diagnostics.reviewExceptions],
-    ['Absence assessment', 'Not assessed: expected workdays and an attendance calendar have not been configured. No-source days are not treated as absences.'],
-  ])
-  metadata.addRow([])
-  metadata.addRow(['Rule version ID', 'Version', 'Effective from', 'Timezone', 'Normal start', 'Late threshold', 'Very late from', 'Scheduled end', 'Overtime from', 'Weekend overtime policy'])
-  styleHeader(metadata.getRow(metadata.rowCount))
-  for (const rule of report.rules) metadata.addRow([rule.id, rule.version, rule.effectiveFrom, rule.timezone, rule.normalStart, rule.graceUntil, rule.veryLateFrom, rule.scheduledEnd, rule.overtimeFrom, rule.weekendOvertimeDays == null ? 'Not configured' : rule.weekendOvertimeDays.length ? rule.weekendOvertimeDays.join(', ') : 'Disabled'])
-  metadata.addRow([])
-  metadata.addRow(['Source import ID', 'Filename', 'Source type', 'Uploaded at', 'SHA-256'])
-  styleHeader(metadata.getRow(metadata.rowCount))
-  for (const item of report.imports) metadata.addRow([item.id, item.filename, item.sourceType, item.uploadedAt, item.checksum])
-  metadata.columns = [{ width: 38 }, { width: 40 }, { width: 32 }, { width: 30 }, { width: 20 }, { width: 20 }, { width: 20 }, { width: 20 }, { width: 20 }, { width: 30 }]
-  setPrintLayout(metadata, '1:1')
-
-  for (const sheet of workbook.worksheets) {
-    sheet.eachRow((row) => {
-      row.eachCell((cell) => {
-        if (!cell.font?.name) cell.font = { name: 'Aptos', size: 9 }
-        if (!cell.alignment?.vertical) cell.alignment = { ...cell.alignment, vertical: 'middle' }
-      })
+  let rowNumber = 6
+  for (const employee of report.manualAttendanceRows) {
+    const row = sheet.getRow(rowNumber)
+    row.height = 22
+    const name = row.getCell(1)
+    name.value = employee.employeeName
+    styleCell(name, { fill: rowNumber % 2 === 0 ? 'F7F9FD' : colors.white, bold: true, color: '24365D', size: 10, borderColor: '9FB5D8' })
+    employee.days.forEach((day, index) => {
+      const inCell = row.getCell(2 + index * 2)
+      const outCell = row.getCell(3 + index * 2)
+      inCell.value = day.inTime
+      outCell.value = day.outTime
+      styleCell(inCell, { fill: statusColor(day, 'in'), size: 9 })
+      styleCell(outCell, { fill: statusColor(day, 'out'), size: 9 })
     })
+    const absent = row.getCell(absentColumn)
+    absent.value = employee.absentCount
+    styleCell(absent, { fill: colors.paleBlue, size: 10, borderColor: 'FF00B050' })
+    rowNumber++
   }
+  if (!report.manualAttendanceRows.length) {
+    sheet.mergeCells(rowNumber, 1, rowNumber, absentColumn - 1)
+    sheet.getCell(rowNumber, 1).value = 'No identified source employee records were found in this import and reporting period.'
+    styleCell(sheet.getCell(rowNumber, 1), { fill: colors.white, horizontal: 'left', size: 10 })
+    styleCell(sheet.getCell(rowNumber, absentColumn), { fill: colors.paleBlue, borderColor: 'FF00B050' })
+    rowNumber++
+  }
+
+  sheet.mergeCells(rowNumber, 1, rowNumber, absentColumn)
+  const policyNote = sheet.getCell(rowNumber, 1)
+  policyNote.value = 'Attendance key: before 12:00 = IN; after 12:00 = OUT. Yellow = late (08:30+); orange = very late (09:30+); red = missing counterpart and counted in No. absent; green = verified overtime (19:30+, weekend rules apply). Blue blank cells mean no source event and are not counted absent.'
+  styleCell(policyNote, { fill: 'F3F6FC', color: '495675', size: 9, horizontal: 'left', borderColor: 'D5DEEE' })
+  policyNote.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
+  sheet.getRow(rowNumber).height = 34
+  rowNumber++
+  const legend = [
+    { label: 'very late', color: colors.orange },
+    { label: 'Absent', color: colors.red },
+    { label: 'Late', color: colors.yellow },
+    { label: 'Overtime', color: colors.green },
+  ]
+  for (const item of legend) {
+    const swatch = sheet.getCell(rowNumber, 1)
+    swatch.fill = fill(item.color)
+    swatch.border = border('FFB4C7E7', 'medium')
+    const label = sheet.getCell(rowNumber, 2)
+    label.value = item.label
+    styleCell(label, { fill: colors.white, horizontal: 'left', size: 10 })
+    rowNumber++
+  }
+
+  sheet.autoFilter = undefined
+  sheet.pageSetup = {
+    orientation: 'landscape',
+    paperSize: 8 as ExcelJS.PaperSize,
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    printArea: `A1:${sheet.getColumn(absentColumn).letter}${rowNumber - 1}`,
+    margins: { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.15, footer: 0.15 },
+  }
+  sheet.pageSetup.printTitlesRow = '1:5'
+  sheet.headerFooter.oddFooter = '&LMM&RJD&CPage &P of &N'
   return workbook.xlsx.writeBuffer()
 }

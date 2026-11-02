@@ -67,12 +67,19 @@ function wrap(value: string, maxCharacters: number, maxLines = 3) {
   return lines.length ? lines : ['']
 }
 
-function dayColor(day: ReportDayCell): Rgb {
-  if (day.kind === 'no_records' || day.kind === 'stale' || day.overtime === 'Unverified') return [1, 0.94, 0.88]
-  if (day.classification === 'Very late') return [0.99, 0.88, 0.88]
-  if (day.classification === 'Late') return [1, 0.96, 0.84]
-  if (day.kind === 'fingerprint_events') return [0.91, 0.95, 0.99]
-  return [0.91, 0.96, 0.92]
+function inColor(day: ReportDayCell): Rgb | undefined {
+  if (day.inStatus === 'review') return [1, 0.9, 0.6]
+  if (day.inStatus === 'absent') return [1, 0, 0]
+  if (day.inStatus === 'late') return [1, 1, 0]
+  if (day.inStatus === 'very_late') return [1, 0.75, 0]
+  if (day.kind === 'stale') return [1, 0.94, 0.88]
+}
+
+function outColor(day: ReportDayCell): Rgb | undefined {
+  if (day.outStatus === 'review') return [1, 0.9, 0.6]
+  if (day.outStatus === 'absent') return [1, 0, 0]
+  if (day.outStatus === 'overtime') return [0.56, 0.88, 0.49]
+  if (day.kind === 'stale') return [1, 0.94, 0.88]
 }
 
 function pageHeader(page: PdfPage, report: AttendanceReport) {
@@ -110,7 +117,7 @@ function employeePages(report: AttendanceReport) {
         { label: 'Employee ID', width: 54 }, { label: 'Employee name', width: 92 }, { label: 'Department', width: 66 },
       ]
       const summaryColumns = [
-        { label: 'Calc', width: 34 }, { label: 'Absence*', width: 44 }, { label: 'Late', width: 32 }, { label: 'Very late', width: 44 },
+        { label: 'Calc', width: 34 }, { label: 'Absent marks', width: 48 }, { label: 'Late', width: 32 }, { label: 'Very late', width: 44 },
         { label: 'OT', width: 30 }, { label: 'Incomplete days', width: 50 }, { label: 'No source', width: 46 }, { label: 'Review', width: 40 },
       ]
       const dateGroupWidth = dateIndices.length ? Math.floor((PAGE_W - MARGIN * 2 - fixedColumns.reduce((sum, column) => sum + column.width, 0) - summaryColumns.reduce((sum, column) => sum + column.width, 0)) / dateIndices.length) : 0
@@ -127,6 +134,7 @@ function employeePages(report: AttendanceReport) {
       const employeeLabel = report.employees.length ? `employees ${employeePage * maxRows + 1}-${Math.min((employeePage + 1) * maxRows, report.employees.length)} of ${report.employees.length}` : ''
       const page: PdfPage = { title: `Weekly attendance detail — ${pageLabel}${employeeLabel ? ` · ${employeeLabel}` : ''}`, commands: [] }
       pageHeader(page, report)
+      drawText(page.commands, MARGIN, 119, 'Colors: yellow Late ≥08:30 | orange Very late ≥09:30 | red missing IN/OUT cell | green verified OUT ≥19:30 (weekend policy applies)', 6.5, false, [0.38, 0.38, 0.43])
       const startX = (PAGE_W - xTotal) / 2
       const headerTop = 130
       const headerHeight = 34
@@ -154,12 +162,12 @@ function employeePages(report: AttendanceReport) {
           ...dateIndices.flatMap((dateIndex) => {
             const day = employee.days[dateIndex]
             return [
-              { text: day.inTimes.join(', '), fill: dayColor(day) },
-              { text: day.outTimes.join(', '), fill: dayColor(day) },
-              { text: reportDayStatus(day), fill: dayColor(day) },
+              { text: day.sourceInValues.join(', ') || (day.kind === 'calculated' ? day.inTimes.join(', ') : ''), fill: inColor(day) },
+              { text: day.sourceOutValues.join(', ') || (day.kind === 'calculated' ? day.outTimes.join(', ') : ''), fill: outColor(day) },
+              { text: reportDayStatus(day) },
             ]
           }),
-          { text: String(employee.totals.calculatedDays) }, { text: 'N/A' }, { text: String(employee.totals.lateDays) }, { text: String(employee.totals.veryLateDays) },
+          { text: String(employee.totals.calculatedDays) }, { text: String(employee.totals.absentMarks) }, { text: String(employee.totals.lateDays) }, { text: String(employee.totals.veryLateDays) },
           { text: String(employee.totals.overtimeDays) }, { text: String(employee.totals.incompleteDays) }, { text: String(employee.totals.noSourceRecordDays) }, { text: String(employee.totals.reviewExceptions) },
         ]
         let cellX = startX
@@ -175,7 +183,7 @@ function employeePages(report: AttendanceReport) {
         })
       })
       if (!employees.length) drawText(page.commands, MARGIN, 180, 'No matched employee has attendance evidence in this selected import and reporting period; see Review & Exceptions for unmatched source records.', 10)
-      drawText(page.commands, MARGIN, 752, 'Absence is not assessed because no work calendar is configured. No source records are not verified absences. Directionless PDF events are not assigned IN/OUT.', 7, false, [0.38, 0.38, 0.43])
+      drawText(page.commands, MARGIN, 752, 'iVMS rule: before 12:00 is IN; after 12:00 is OUT. Red cells mark a missing counterpart and are counted as absent marks. Dates with no source events are not counted.', 7, false, [0.38, 0.38, 0.43])
       drawText(page.commands, MARGIN, 766, `Roster basis: ${report.metadata.rosterBasis}`, 7, false, [0.38, 0.38, 0.43])
       pages.push(page)
     }
@@ -229,6 +237,7 @@ function metadataPages(report: AttendanceReport) {
     drawText(page.commands, MARGIN, 149, `Generated: ${formatKigaliDateTime(report.metadata.generatedAt)} (${report.metadata.timezone}); UTC ${report.metadata.generatedAt}; Period: ${report.metadata.periodStart} to ${report.metadata.periodEnd}`, 8, false)
     drawText(page.commands, MARGIN, 165, report.metadata.rosterBasis, 7, false)
     drawText(page.commands, MARGIN, 177, `Data diagnostics: ${report.diagnostics.sourceRecordsFound} source records (${report.diagnostics.validSourceRecords} valid, ${report.diagnostics.invalidSourceRecords} invalid); ${report.diagnostics.matchedEmployees} matched employees; ${report.diagnostics.unmatchedRecords} unmatched records; ${report.diagnostics.calculatedEmployeeDays} calculated employee-days; ${report.diagnostics.incompleteEmployeeDays} incomplete; ${report.diagnostics.reviewExceptions} review exceptions.`, 7, false)
+    drawText(page.commands, MARGIN, 188, 'Direction rule: before 12:00 Africa/Kigali is IN; after 12:00 is OUT; exactly 12:00 remains unresolved.', 7, true, NAVY)
     const startTop = 199
     const widths = [140, 280, 650]
     const headers = ['Type', 'Reference', 'Details']
@@ -284,7 +293,7 @@ export function createAttendancePdf(report: AttendanceReport) {
   if (exceptionRows.length) pages.push(...tablePages(report, 'Review & exceptions', ['Severity', 'Employee ID', 'Employee name', 'Date', 'Source', 'Explanation'], exceptionRows, [60, 92, 150, 78, 135, 550], 22))
   else pages[0].commands.push(`BT /F2 9 Tf ${rgb(NAVY)} rg 1 0 0 1 ${MARGIN} ${PAGE_H - 784} Tm ${pdfText('No review exceptions were recorded.') } ET`)
   const fingerprintRows = report.fingerprintEvidence.map((item) => [item.employeeNumber ?? '—', item.employeeName ?? '—', item.date ?? '—', item.timestamp ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', dateStyle: 'short', timeStyle: 'short' }).format(new Date(item.timestamp)) : item.sourceTimestampText ?? 'Invalid timestamp', item.attendanceStatus ?? '—', item.checkpoint ?? '—', report.imports.find((source) => source.id === item.importId)?.filename ?? item.importId, `${item.sourcePage ?? '—'} / ${item.sourceRow ?? '—'}`])
-  if (fingerprintRows.length) pages.push(...tablePages(report, 'Raw fingerprint source evidence (direction not inferred)', ['Employee ID', 'Employee name', 'Date', 'Recorded time', 'Status', 'Checkpoint', 'Source file', 'Page / row'], fingerprintRows, [78, 125, 72, 105, 85, 190, 350, 75], 22))
+  if (fingerprintRows.length) pages.push(...tablePages(report, 'Raw fingerprint source evidence (original events preserved)', ['Employee ID', 'Employee name', 'Date', 'Recorded time', 'Status', 'Checkpoint', 'Source file', 'Page / row'], fingerprintRows, [78, 125, 72, 105, 85, 190, 350, 75], 22))
   if (report.imports.length || report.rules.length) pages.push(...metadataPages(report))
   else pages[0].commands.push(`BT /F1 8 Tf ${rgb(NAVY)} rg 1 0 0 1 ${MARGIN} ${PAGE_H - 798} Tm ${pdfText('No source imports or attendance rule versions apply to this period.') } ET`)
   return makePdf(pages, report)

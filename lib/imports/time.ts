@@ -36,7 +36,10 @@ export function kigaliIso(year: number, month: number, day: number, hour: number
 }
 
 export function normalizeEmployeeNumber(value: string | null | undefined): string | null {
-  const normalized = value?.trim().toLocaleUpperCase('en-US')
+  // iVMS prints IDs as text with a leading apostrophe (for example, '123),
+  // while the organized workbook stores the same ID without that marker.
+  // Ignore only wrapping quote marks for matching; raw source values remain intact.
+  const normalized = value?.trim().replace(/^['’]+|['’]+$/g, '').trim().toLocaleUpperCase('en-US')
   return normalized || null
 }
 

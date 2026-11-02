@@ -83,11 +83,22 @@ export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient()
   const { data: duplicate, error: duplicateError } = await supabase
     .from('attendance_imports')
-    .select('id, processing_status')
+    .select('id, source_type, processing_status')
     .eq('sha256_checksum', input.sha256)
     .maybeSingle()
   if (duplicateError) return NextResponse.json({ error: 'Could not check whether this file was already uploaded.' }, { status: 500 })
-  if (duplicate && !['failed', 'uploaded'].includes(duplicate.processing_status)) return NextResponse.json({ error: 'This exact file has already been uploaded.', existingImportId: duplicate.id, status: duplicate.processing_status }, { status: 409 })
+  if (duplicate) {
+    const countQuery = duplicate.source_type === 'ivms_pdf_original_records'
+      ? await supabase.from('raw_fingerprint_events').select('id', { count: 'exact', head: true }).eq('import_id', duplicate.id)
+      : await supabase.from('organized_attendance_entries').select('id', { count: 'exact', head: true }).eq('import_id', duplicate.id)
+    if (countQuery.error) return NextResponse.json({ error: 'The earlier import could not be checked for saved source records.' }, { status: 503 })
+    if ((countQuery.count ?? 0) > 0) {
+      return NextResponse.json({ error: `This file already has ${countQuery.count} persisted source records. Review that import instead of uploading duplicate evidence.`, existingImportId: duplicate.id, status: duplicate.processing_status, recordCount: countQuery.count }, { status: 409 })
+    }
+    if (!['failed', 'uploaded', 'parsed', 'needs_review', 'completed'].includes(duplicate.processing_status)) {
+      return NextResponse.json({ error: 'This import is currently processing and cannot be retried yet.', existingImportId: duplicate.id, status: duplicate.processing_status }, { status: 409 })
+    }
+  }
 
   if (duplicate) {
     const { data: existing, error: existingError } = await supabase.from('attendance_imports')

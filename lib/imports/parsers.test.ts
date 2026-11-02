@@ -82,6 +82,7 @@ describe('attendance source parsers', () => {
   it('distinguishes encrypted PDFs from other PDF decoder failures', () => {
     expect(pdfOpenErrorMessage(Object.assign(new Error('Password required'), { name: 'PasswordException' }))).toContain('password-protected or encrypted')
     expect(pdfOpenErrorMessage(Object.assign(new Error('Invalid document'), { name: 'InvalidPDFException' }))).toContain('(InvalidPDFException): Invalid document')
+    expect(pdfOpenErrorMessage(new Error("Setting up fake worker failed: Cannot find module 'pdf.worker.mjs'"))).toContain('PDF reader could not start on the server')
   })
 
   it('pairs non-conventional date headings with IN and OUT columns and preserves blanks', async () => {

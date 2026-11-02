@@ -9,6 +9,12 @@ const nextConfig = {
   // readable-stream). Load it with Node at runtime instead of making Turbopack
   // watch and bundle every transitive file in the pnpm store.
   serverExternalPackages: ['exceljs', 'pdfjs-dist'],
+  // PDF.js loads its Node worker dynamically at runtime. Include it explicitly
+  // in Vercel's traced route bundle so serverless imports can create the fake
+  // worker instead of failing to resolve pdf.worker.mjs.
+  outputFileTracingIncludes: {
+    '/api/import/*': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
+  },
   // This project lives under a larger pnpm workspace. Keep Turbopack's file
   // watcher scoped to this application rather than the entire Documents tree.
   turbopack: {

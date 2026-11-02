@@ -14,6 +14,9 @@ export function pdfOpenErrorMessage(error: unknown): string {
   const errorName = error && typeof error === 'object' && 'name' in error && typeof error.name === 'string' ? error.name : ''
   const rawErrorMessage = error instanceof Error ? error.message : ''
   const errorMessage = rawErrorMessage.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+  if (/setting up fake worker|pdf\.worker\.mjs|worker failed/i.test(errorMessage)) {
+    return 'The PDF reader could not start on the server. Your private original is safe; retry this import after the application update is deployed.'
+  }
   if (errorName === 'PasswordException' || /password|encrypt/i.test(errorMessage)) {
     return 'This PDF is password-protected or encrypted. Export an unencrypted iVMS Original Records Report and try again.'
   }

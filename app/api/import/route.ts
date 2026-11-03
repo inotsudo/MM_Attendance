@@ -60,7 +60,7 @@ export async function GET(request: Request) {
     return new Response(bytes, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="MMRJD-attendance-import-history-${generatedAt.toISOString().slice(0, 10)}.xlsx"`,
+        'Content-Disposition': `attachment; filename="attendance-import-history-${generatedAt.toISOString().slice(0, 10)}.xlsx"`,
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
       },

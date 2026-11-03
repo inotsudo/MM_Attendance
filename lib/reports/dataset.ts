@@ -14,6 +14,7 @@ export type BuildAttendanceReportInput = {
   reviews: ReportReviewItem[]
   rules: ReportRule[]
   imports: ReportImport[]
+  timezone?: string
 }
 
 export function dateSequence(from: string, to: string) {
@@ -24,15 +25,15 @@ export function dateSequence(from: string, to: string) {
   return dates
 }
 
-export function formatKigaliTime(value: string | null) {
+export function formatKigaliTime(value: string | null, timezone = 'Africa/Kigali') {
   if (!value) return null
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
-  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date)
+  return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date)
 }
 
-export function formatKigaliDateTime(value: string) {
-  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(new Date(value))
+export function formatKigaliDateTime(value: string, timezone = 'Africa/Kigali') {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(new Date(value))
 }
 
 function ruleFor(date: string, rules: ReportRule[]) {
@@ -43,13 +44,19 @@ function labelClassification(value: string) {
   return ({ before_start: 'Before start', on_time: 'On time', late: 'Late', very_late: 'Very late', no_event: 'Not recorded' } as Record<string, string>)[value] ?? 'Unclassified'
 }
 
-function formatKigaliClock(value: string) {
+function formatKigaliClock(value: string, timezone = 'Africa/Kigali') {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
-  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(date)
+  return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(date)
 }
 
-function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[], employees: ReportEmployee[]): ManualAttendanceRow[] {
+function displayOrganizedClock(sourceValue: string | null, normalizedValue: string | null, timezone: string) {
+  if (sourceValue && /^\*{0,2}\d{1,2}:\d{2}(?::\d{2})?$/.test(sourceValue.trim())) return sourceValue.trim()
+  if (normalizedValue) return formatKigaliClock(normalizedValue, timezone)
+  return sourceValue
+}
+
+function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], rules: ReportRule[], employees: ReportEmployee[], timezone = 'Africa/Kigali'): ManualAttendanceRow[] {
   type Candidate = { event: FingerprintEvent; display: string; explicitDirection: 'IN' | 'OUT' | null; validTimestamp: boolean }
   const groups = new Map<string, { employeeNumber: string | null; name: string; nameCounts: Map<string, number>; byDate: Map<string, Candidate[]>; invalidDates: Set<string> }>()
   for (const item of evidence) {
@@ -74,7 +81,7 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     if (!item.date || !dates.includes(item.date)) continue
     const candidates: Candidate[] = []
     if (item.sourceType === 'ivms_pdf_original_records' && item.timestamp) {
-      const clock = formatKigaliClock(item.timestamp)
+      const clock = formatKigaliClock(item.timestamp, timezone)
       if (clock) candidates.push({ event: { id: item.id, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp: item.timestamp }, display: `*${clock}`, explicitDirection: null, validTimestamp: true })
       else group.invalidDates.add(item.date)
     } else if (item.sourceType === 'ivms_pdf_original_records') {
@@ -82,15 +89,15 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     } else if (item.sourceType === 'organized_excel') {
       if (item.normalizedInAt || item.sourceIn) {
         const rawClock = item.sourceIn?.replace(/^\*+/, '')
-        const parsed = item.normalizedInAt ? { iso: item.normalizedInAt } : parseSourceDateTime(`${item.date} ${rawClock ?? ''}`)
+        const parsed = item.normalizedInAt ? { iso: item.normalizedInAt } : parseSourceDateTime(`${item.date} ${rawClock ?? ''}`, timezone)
         const timestamp = parsed.iso ?? `${item.date} ${rawClock ?? ''}`
-        candidates.push({ event: { id: `${item.id}:in`, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp, direction: 'IN' }, display: item.sourceIn ?? formatKigaliClock(timestamp) ?? '', explicitDirection: 'IN', validTimestamp: Boolean(parsed.iso) })
+        candidates.push({ event: { id: `${item.id}:in`, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp, direction: 'IN' }, display: displayOrganizedClock(item.sourceIn, item.normalizedInAt ?? parsed.iso, timezone) ?? '', explicitDirection: 'IN', validTimestamp: Boolean(parsed.iso) })
       }
       if (item.normalizedOutAt || item.sourceOut) {
         const rawClock = item.sourceOut?.replace(/^\*+/, '')
-        const parsed = item.normalizedOutAt ? { iso: item.normalizedOutAt } : parseSourceDateTime(`${item.date} ${rawClock ?? ''}`)
+        const parsed = item.normalizedOutAt ? { iso: item.normalizedOutAt } : parseSourceDateTime(`${item.date} ${rawClock ?? ''}`, timezone)
         const timestamp = parsed.iso ?? `${item.date} ${rawClock ?? ''}`
-        candidates.push({ event: { id: `${item.id}:out`, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp, direction: 'OUT' }, display: item.sourceOut ?? formatKigaliClock(timestamp) ?? '', explicitDirection: 'OUT', validTimestamp: Boolean(parsed.iso) })
+        candidates.push({ event: { id: `${item.id}:out`, employeeId: identity, employeeName: item.employeeName, department: item.department, timestamp, direction: 'OUT' }, display: displayOrganizedClock(item.sourceOut, item.normalizedOutAt ?? parsed.iso, timezone) ?? '', explicitDirection: 'OUT', validTimestamp: Boolean(parsed.iso) })
       }
     }
     if (candidates.length) group.byDate.set(item.date, [...(group.byDate.get(item.date) ?? []), ...candidates])
@@ -116,7 +123,7 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
     let absentCount = 0
     const dayRows = dates.map((date) => {
       const candidates = group.byDate.get(date) ?? []
-      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'long' }).format(new Date(`${date}T12:00:00Z`))
       const isRestDay = weekday === 'Saturday' || weekday === 'Sunday'
       if (!candidates.length) {
         const status = group.invalidDates.has(date) ? 'review' as const : isRestDay ? 'blank' as const : 'absent' as const
@@ -124,23 +131,23 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
         return { date, inTime: null, outTime: null, inStatus: status, outStatus: status, hasEvidence: false }
       }
       const dateRule = rules.filter((rule) => rule.effectiveFrom <= date).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom) || a.version - b.version).at(-1)
-      const incoming = candidates.filter((candidate) => candidate.explicitDirection === 'IN' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === 'IN')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
-      const outgoing = candidates.filter((candidate) => candidate.explicitDirection === 'OUT' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === 'OUT')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
-      const unresolvedNoon = candidates.some((candidate) => candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp) === null)
+      const incoming = candidates.filter((candidate) => candidate.explicitDirection === 'IN' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp, timezone) === 'IN')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
+      const outgoing = candidates.filter((candidate) => candidate.explicitDirection === 'OUT' || (candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp, timezone) === 'OUT')).sort((a, b) => new Date(a.event.timestamp).getTime() - new Date(b.event.timestamp).getTime())
+      const unresolvedNoon = candidates.some((candidate) => candidate.explicitDirection === null && inferFingerprintDirection(candidate.event.timestamp, timezone) === null)
       const inTime = incoming[0]?.display ?? null
       const outTime = outgoing.at(-1)?.display ?? null
       const noSideCanBeAssigned = unresolvedNoon && incoming.length === 0 && outgoing.length === 0
       // The organization has approved these thresholds as its active policy.
       // Use them for the presentation grid when no versioned DB rule is
       // available; a present rule in a different timezone remains unverified.
-      const usableRule = !dateRule || dateRule.timezone === 'Africa/Kigali'
+      const usableRule = !dateRule || dateRule.timezone === timezone
       const latestOut = outgoing.at(-1)
-      const lastOutClock = latestOut?.validTimestamp ? formatKigaliClock(latestOut.event.timestamp) : null
+      const lastOutClock = latestOut?.validTimestamp ? formatKigaliClock(latestOut.event.timestamp, timezone) : null
       const reachedOvertimeThreshold = Boolean(lastOutClock && lastOutClock >= (dateRule?.overtimeFrom ?? DEFAULT_ATTENDANCE_RULES.overtimeFrom))
-      const weekendPolicyMissing = isRestDay && reachedOvertimeThreshold && (dateRule?.timezone !== 'Africa/Kigali' || dateRule.weekendOvertimeDays == null)
+      const weekendPolicyMissing = isRestDay && reachedOvertimeThreshold && (dateRule?.timezone !== timezone || dateRule.weekendOvertimeDays == null)
       const inNeedsReview = noSideCanBeAssigned || Boolean(incoming[0] && !incoming[0].validTimestamp)
       const outNeedsReview = noSideCanBeAssigned || Boolean(outgoing.at(-1) && !outgoing.at(-1)!.validTimestamp) || weekendPolicyMissing
-      const arrivalClock = incoming[0]?.validTimestamp ? formatKigaliClock(incoming[0].event.timestamp) : null
+      const arrivalClock = incoming[0]?.validTimestamp ? formatKigaliClock(incoming[0].event.timestamp, timezone) : null
       const [arrivalHour, arrivalMinute] = (arrivalClock ?? '').split(':').map(Number)
       const arrivalMinutes = arrivalHour * 60 + arrivalMinute
       const lateFrom = dateRule?.graceUntil ?? DEFAULT_ATTENDANCE_RULES.graceUntil
@@ -176,13 +183,14 @@ function buildManualAttendanceRows(evidence: ReportEvidence[], dates: string[], 
 }
 
 export function buildAttendanceReport(input: BuildAttendanceReportInput): AttendanceReport {
+  const timezone = input.timezone ?? input.rules.at(-1)?.timezone ?? 'Africa/Kigali'
   const dates = dateSequence(input.from, input.to)
   const exceptions: ReportException[] = []
   for (const date of dates) {
     const rule = ruleFor(date, input.rules)
     const hasReportingSubjects = input.employees.length > 0 || input.evidence.some((item) => item.date === date)
     if (!rule && hasReportingSubjects) exceptions.push({ severity: 'error', employeeNumber: null, employeeName: null, date, source: null, explanation: `No versioned attendance rule is effective on ${date}; no classifications can be verified.` })
-    else if (rule && rule.timezone !== 'Africa/Kigali' && hasReportingSubjects) exceptions.push({ severity: 'error', employeeNumber: null, employeeName: null, date, source: `Rule v${rule.version}`, explanation: `The applicable rule uses ${rule.timezone}, not Africa/Kigali; no classifications can be verified.` })
+    else if (rule && rule.timezone !== timezone && hasReportingSubjects) exceptions.push({ severity: 'error', employeeNumber: null, employeeName: null, date, source: `Rule v${rule.version}`, explanation: `The applicable rule uses ${rule.timezone}, not ${timezone}; no classifications can be verified.` })
   }
   const evidenceByEmployeeDate = new Map<string, ReportEvidence[]>()
   for (const item of input.evidence) {
@@ -257,7 +265,7 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
       const hasCorrections = Boolean(calculation && (calculation.correctionCount > 0 || input.corrections.some((correction) => correction.calculationId === calculation.id)))
       const current = Boolean(calculation && ruleCurrent && engineCurrent && evidenceComplete && !hasCorrections)
       const allTimes = sources.flatMap((item) => item.sourceType === 'organized_excel'
-        ? [item.normalizedInAt, item.normalizedOutAt].map(formatKigaliTime).filter((time): time is string => Boolean(time))
+        ? [item.normalizedInAt, item.normalizedOutAt].map((value) => formatKigaliTime(value, timezone)).filter((time): time is string => Boolean(time))
         : item.timestamp ? [formatKigaliTime(item.timestamp)].filter((time): time is string => Boolean(time)) : [])
       const fingerprintTimes = fingerprint.filter((item) => item.timestamp).map((item) => ({ time: formatKigaliTime(item.timestamp)!, instant: new Date(item.timestamp!).getTime() }))
       const hasObservedTime = fingerprintTimes.length > 0 || organized.some((item) => Boolean(item.sourceIn || item.sourceOut))
@@ -395,14 +403,14 @@ export function buildAttendanceReport(input: BuildAttendanceReportInput): Attend
     const rule = ruleFor(day, input.rules)
     if (rule) uniqueRules.set(rule.id, rule)
   }
-  const manualAttendanceRows = buildManualAttendanceRows(input.evidence, dates, input.rules, input.employees)
+  const manualAttendanceRows = buildManualAttendanceRows(input.evidence, dates, input.rules, input.employees, timezone)
   return {
     metadata: {
       reportId: input.reportId,
       title: 'Weekly Employee Attendance Report',
-      organization: 'MM&RJD',
+      organization: 'Attendance',
       generatedAt: input.generatedAt,
-      timezone: 'Africa/Kigali',
+      timezone,
       periodStart: input.from,
       periodEnd: input.to,
       rosterBasis: 'Active employee roster at report generation plus source identities; historical employment dates are not stored.',

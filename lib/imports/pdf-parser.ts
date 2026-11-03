@@ -66,7 +66,7 @@ function normalizedIdentity(employeeNumber: string | null, employeeName: string 
   return normalizeEmployeeNumber(employeeNumber) ?? `name:${normalizeEmployeeName(employeeName) ?? `record:${index}`}`
 }
 
-export function parseIvmsPageItems(items: PositionedText[], page: number, sourceIndexStart: number, fallbackLayout?: { starts: number[]; headerY: number }): { records: PdfAttendanceRecord[]; hasHeader: boolean; layout?: { starts: number[]; headerY: number } } {
+export function parseIvmsPageItems(items: PositionedText[], page: number, sourceIndexStart: number, fallbackLayout?: { starts: number[]; headerY: number }, timeZone = 'Africa/Kigali'): { records: PdfAttendanceRecord[]; hasHeader: boolean; layout?: { starts: number[]; headerY: number } } {
   const labelItems = items.map((item) => ({ ...item, normalized: item.text.toLowerCase().replace(/\s+/g, ' ').trim() }))
   const header = FIELD_LABELS.map((field) => labelItems.find((item) => item.normalized === field))
   const hasHeader = Boolean(header[0] && header[1] && header[2] && header[3] && header[4] && header[5])
@@ -118,7 +118,7 @@ export function parseIvmsPageItems(items: PositionedText[], page: number, source
     const employeeNumber = employeeNumberRaw && employeeNumberRaw !== '-' ? employeeNumberRaw : null
     const employeeName = employeeNameRaw && employeeNameRaw !== '-' ? employeeNameRaw : null
     const sourceTimestamp = timeRaw ?? ''
-    const parsedTimestamp = parseSourceDateTime(sourceTimestamp)
+    const parsedTimestamp = parseSourceDateTime(sourceTimestamp, timeZone)
     const warnings: ImportWarning[] = []
     if (!employeeNumber) warnings.push({ code: 'missing_employee_id', severity: 'warning', message: 'The PDF event has no Person ID.', sourceIndex, page })
     if (!employeeName) warnings.push({ code: 'missing_employee_name', severity: 'warning', message: 'The PDF event has no employee name.', sourceIndex, page })
@@ -156,7 +156,7 @@ export function parseIvmsPageItems(items: PositionedText[], page: number, source
   return { records, hasHeader, layout: hasHeader ? { starts, headerY } : fallbackLayout }
 }
 
-export async function parseIvmsPdf(bytes: Uint8Array): Promise<ParsedAttendanceImport> {
+export async function parseIvmsPdf(bytes: Uint8Array, timeZone = 'Africa/Kigali'): Promise<ParsedAttendanceImport> {
   if (bytes.length < 8 || new TextDecoder().decode(bytes.subarray(0, 5)) !== '%PDF-') throw new Error('The file signature is not a PDF.')
   const task = getDocument({ data: bytes, useSystemFonts: true, disableFontFace: true })
   let document: Awaited<typeof task.promise>
@@ -179,7 +179,7 @@ export async function parseIvmsPdf(bytes: Uint8Array): Promise<ParsedAttendanceI
         if (!('str' in item) || !item.str.trim() || !('transform' in item)) return []
         return [{ text: item.str, x: item.transform[4], y: item.transform[5], width: item.width }]
       })
-      const result = parseIvmsPageItems(positioned, pageNumber, records.length, layout)
+      const result = parseIvmsPageItems(positioned, pageNumber, records.length, layout, timeZone)
       foundReportHeader ||= result.hasHeader
       if (result.layout) layout = result.layout
       records.push(...result.records)

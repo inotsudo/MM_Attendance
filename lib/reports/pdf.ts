@@ -159,7 +159,7 @@ function sheetPages(report: AttendanceReport) {
       drawText(commands, legendX + 19, legendTop, item.label, 6.5, false, color.muted)
       legendX += 82
     }
-    const footer = `MM&RJD | Confidential attendance information | Page ${pageIndex + 1} of ${groups.length}`
+    const footer = `Attendance information | Page ${pageIndex + 1} of ${groups.length}`
     drawText(commands, MARGIN, PAGE_H - 16, footer, 6.5, false, color.muted)
     return page
   })
@@ -181,7 +181,7 @@ function makePdf(pages: PdfPage[], report: AttendanceReport) {
   })
   const infoId = objects.length
   objects[infoId] = `<< /Title ${hexText(`${report.metadata.organization} ${report.metadata.title}`)} /Author ${hexText(report.metadata.organization)} /Subject ${hexText(`${report.metadata.periodStart} to ${report.metadata.periodEnd}`)} >>`
-  let output = '%PDF-1.4\n%MMRJD\n'
+  let output = '%PDF-1.4\n%AttendanceSheet\n'
   const offsets = [0]
   for (let id = 1; id < objects.length; id++) {
     offsets[id] = Buffer.byteLength(output, 'ascii')

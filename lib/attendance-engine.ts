@@ -18,6 +18,7 @@ export type AttendanceRules = {
   overtimeFrom: string
   /** null means weekend overtime has no explicit policy. */
   weekendOvertimeDays?: Array<'Saturday' | 'Sunday'> | null
+  timezone?: string
   version: number
 }
 export type ArrivalClassification = 'before_start' | 'on_time' | 'late' | 'very_late' | 'no_event'
@@ -65,35 +66,35 @@ function minutes(value: string) {
   return hours * 60 + mins
 }
 
-function localMinutes(date: Date) {
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
+function localMinutes(date: Date, timeZone = 'Africa/Kigali') {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
   const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
   const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
   return hour * 60 + minute
 }
 
-function toDate(value: string) {
-  const normalized = parseSourceDateTime(value)
+function toDate(value: string, timeZone = 'Africa/Kigali') {
+  const normalized = parseSourceDateTime(value, timeZone)
   const parsed = normalized.iso ? new Date(normalized.iso) : new Date(Number.NaN)
   return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
-function dateKey(date: Date) {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Kigali', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
+function dateKey(date: Date, timeZone = 'Africa/Kigali') {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]))
   return `${value.year}-${value.month}-${value.day}`
 }
 
-function weekendDay(date: Date) {
-  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Kigali', weekday: 'long' }).format(date)
+function weekendDay(date: Date, timeZone = 'Africa/Kigali') {
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(date)
   return weekday === 'Saturday' || weekday === 'Sunday' ? weekday : null
 }
 
-/** Derive iVMS event direction using the approved MM&RJD rule and Kigali time. */
-export function inferFingerprintDirection(timestamp: string): 'IN' | 'OUT' | null {
-  const parsed = toDate(timestamp)
+/** Derive iVMS event direction using the approved before-noon/after-noon rule and selected timezone. */
+export function inferFingerprintDirection(timestamp: string, timeZone = 'Africa/Kigali'): 'IN' | 'OUT' | null {
+  const parsed = toDate(timestamp, timeZone)
   if (!parsed) return null
-  const time = localMinutes(parsed)
+  const time = localMinutes(parsed, timeZone)
   if (time < 12 * 60) return 'IN'
   if (time > 12 * 60) return 'OUT'
   return null
@@ -111,7 +112,7 @@ export function processAttendanceEvents(
   const valid: ValidEvent[] = []
 
   for (const event of events) {
-    const parsed = toDate(event.timestamp)
+    const parsed = toDate(event.timestamp, rules.timezone)
     if (!parsed) {
       const date = /^\d{4}-\d{2}-\d{2}/.test(event.timestamp) ? event.timestamp.slice(0, 10) : 'unknown-date'
       const employeeKey = event.employeeId ?? `unmatched:${event.employeeName ?? 'unknown'}`
@@ -119,7 +120,7 @@ export function processAttendanceEvents(
       invalidByIdentityAndDate.set(key, [...(invalidByIdentityAndDate.get(key) ?? []), event])
       continue
     }
-    valid.push({ ...event, parsed, date: dateKey(parsed) })
+    valid.push({ ...event, parsed, date: dateKey(parsed, rules.timezone) })
   }
 
   const groups = new Map<string, ValidEvent[]>()
@@ -138,7 +139,7 @@ export function processAttendanceEvents(
     const duplicateIds = sorted.filter((event, index) => index > 0 && event.parsed.getTime() === sorted[index - 1].parsed.getTime()).map((event) => event.id)
     if (duplicateIds.length) reviewIssues.push(issue('duplicate_event', 'Multiple fingerprint events share the same timestamp.', duplicateIds))
     if (!first.employeeId) reviewIssues.push(issue('unmatched_employee', 'The event could not be matched to an employee.', sorted.map((event) => event.id)))
-    const directions = new Map(sorted.map((event) => [event.id, event.direction ?? inferFingerprintDirection(event.timestamp)]))
+    const directions = new Map(sorted.map((event) => [event.id, event.direction ?? inferFingerprintDirection(event.timestamp, rules.timezone)]))
     const directional = sorted.some((event) => directions.get(event.id) === 'IN' || directions.get(event.id) === 'OUT')
     const inEvents = sorted.filter((event) => directions.get(event.id) === 'IN')
     const outEvents = sorted.filter((event) => directions.get(event.id) === 'OUT')
@@ -150,7 +151,7 @@ export function processAttendanceEvents(
     else if (!directional && !unresolvedNoon.length) reviewIssues.push(issue('direction_unknown', 'Source events do not establish IN or OUT direction; arrival and completeness are not classified.', sorted.map((event) => event.id)))
 
     const arrivalEvent = inEvents[0]
-    const firstMinutes = arrivalEvent ? localMinutes(arrivalEvent.parsed) : 0
+    const firstMinutes = arrivalEvent ? localMinutes(arrivalEvent.parsed, rules.timezone) : 0
     const normalStart = minutes(rules.normalStart)
     const graceUntil = minutes(rules.graceUntil)
     const veryLateFrom = minutes(rules.veryLateFrom)
@@ -162,12 +163,12 @@ export function processAttendanceEvents(
     else arrivalClassification = 'very_late'
 
     const lastOut = outEvents.at(-1)
-    const weekendName = weekendDay(first.parsed)
+    const weekendName = weekendDay(first.parsed, rules.timezone)
     const weekend = weekendName !== null
     const weekendAllowed = weekendName ? rules.weekendOvertimeDays?.includes(weekendName) ?? null : false
-    const possibleWeekendOvertime = weekend && lastOut && localMinutes(lastOut.parsed) >= minutes(rules.overtimeFrom)
+    const possibleWeekendOvertime = weekend && lastOut && localMinutes(lastOut.parsed, rules.timezone) >= minutes(rules.overtimeFrom)
     if (possibleWeekendOvertime && weekendAllowed === null) reviewIssues.push(issue('weekend_overtime_policy_unconfigured', 'A weekend event reached the overtime threshold, but the applicable weekend overtime policy is not configured.', [lastOut.id]))
-    const overtimeEvidence = Boolean(lastOut && localMinutes(lastOut.parsed) >= minutes(rules.overtimeFrom) && (!weekend || weekendAllowed === true))
+    const overtimeEvidence = Boolean(lastOut && localMinutes(lastOut.parsed, rules.timezone) >= minutes(rules.overtimeFrom) && (!weekend || weekendAllowed === true))
     const completeEvidence = inEvents.length > 0 && outEvents.length > 0
 
     results.push({

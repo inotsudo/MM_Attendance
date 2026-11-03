@@ -1,12 +1,39 @@
-const KIGALI_OFFSET_MINUTES = 120
+export const DEFAULT_ATTENDANCE_TIME_ZONE = 'Africa/Kigali'
 
-export function parseSourceDateTime(value: string): { iso: string | null; ambiguous: boolean } {
+function localParts(instant: number, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(instant))
+  const values = Object.fromEntries(parts.map((part) => [part.type, Number(part.value)]))
+  return { year: values.year, month: values.month, day: values.day, hour: values.hour, minute: values.minute, second: values.second }
+}
+
+export function zonedIso(year: number, month: number, day: number, hour: number, minute: number, second = 0, timeZone = DEFAULT_ATTENDANCE_TIME_ZONE): string | null {
+  if (![year, month, day, hour, minute, second].every(Number.isInteger) || year < 1900 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return null
+  const requested = Date.UTC(year, month - 1, day, hour, minute, second)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) return null
+  try {
+    let instant = requested
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const represented = localParts(instant, timeZone)
+      const representedAsUtc = Date.UTC(represented.year, represented.month - 1, represented.day, represented.hour, represented.minute, represented.second)
+      const offset = representedAsUtc - instant
+      const adjusted = requested - offset
+      if (adjusted === instant) break
+      instant = adjusted
+    }
+    const result = localParts(instant, timeZone)
+    if (result.year !== year || result.month !== month || result.day !== day || result.hour !== hour || result.minute !== minute || result.second !== second) return null
+    return new Date(instant).toISOString()
+  } catch { return null }
+}
+
+export function parseSourceDateTime(value: string, timeZone = DEFAULT_ATTENDANCE_TIME_ZONE): { iso: string | null; ambiguous: boolean } {
   const text = value.trim().replace(/^\*+/, '')
   if (!text) return { iso: null, ambiguous: false }
 
   const explicit = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/)
   if (explicit) {
-    return { iso: kigaliIso(+explicit[1], +explicit[2], +explicit[3], +explicit[4], +explicit[5], +(explicit[6] ?? 0)), ambiguous: false }
+    return { iso: zonedIso(+explicit[1], +explicit[2], +explicit[3], +explicit[4], +explicit[5], +(explicit[6] ?? 0), timeZone), ambiguous: false }
   }
 
   const dayFirst = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/)
@@ -16,7 +43,7 @@ export function parseSourceDateTime(value: string): { iso: string | null; ambigu
     if (first <= 12 && second <= 12) return { iso: null, ambiguous: true }
     const day = first > 12 ? first : second
     const month = first > 12 ? second : first
-    return { iso: kigaliIso(+dayFirst[3], month, day, +dayFirst[4], +dayFirst[5], +(dayFirst[6] ?? 0)), ambiguous: false }
+    return { iso: zonedIso(+dayFirst[3], month, day, +dayFirst[4], +dayFirst[5], +(dayFirst[6] ?? 0), timeZone), ambiguous: false }
   }
 
   const offsetTimestamp = Date.parse(text)
@@ -27,12 +54,7 @@ export function parseSourceDateTime(value: string): { iso: string | null; ambigu
 }
 
 export function kigaliIso(year: number, month: number, day: number, hour: number, minute: number, second = 0): string | null {
-  if (![year, month, day, hour, minute, second].every(Number.isInteger)) return null
-  if (year < 1900 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null
-  const utc = Date.UTC(year, month - 1, day, hour, minute, second) - KIGALI_OFFSET_MINUTES * 60_000
-  const check = new Date(Date.UTC(year, month - 1, day))
-  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null
-  return new Date(utc).toISOString()
+  return zonedIso(year, month, day, hour, minute, second, DEFAULT_ATTENDANCE_TIME_ZONE)
 }
 
 export function normalizeEmployeeNumber(value: string | null | undefined): string | null {

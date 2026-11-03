@@ -130,7 +130,7 @@ export function analyzeAttendanceCalculation(input: {
   if (!rule || rule.timezone !== 'Africa/Kigali') return [{
     ...base, category: 'attendance_rules_unavailable', evidenceClass: 'insufficient_evidence',
     title: 'Attendance rules cannot verify this day',
-    explanation: rule ? `The applicable rule uses ${rule.timezone}; MM&RJD attendance is grouped in Africa/Kigali.` : 'No versioned attendance rule is effective for this date.',
+    explanation: rule ? `The applicable rule uses ${rule.timezone}; Attendance is grouped in Africa/Kigali.` : 'No versioned attendance rule is effective for this date.',
     rulesVersionId: rule?.id ?? null, proposal: null,
   }]
 

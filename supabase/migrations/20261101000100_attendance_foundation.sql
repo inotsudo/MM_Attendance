@@ -1,4 +1,4 @@
--- MM&RJD attendance foundation. Apply with `supabase db push` after linking a project.
+-- Attendance data foundation. Apply with `supabase db push` after linking a project.
 -- Source evidence and derived calculations are separate, append-only records.
 
 create type public.app_role as enum (

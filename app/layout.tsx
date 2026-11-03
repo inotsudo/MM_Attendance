@@ -3,8 +3,8 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'MM&RJD Attendance',
-  description: 'Attendance operations, imports, review, and weekly reporting for MM&RJD.',
+  title: 'Attendance Sheet Builder',
+  description: 'Prepare a color-coded weekly attendance sheet from an iVMS PDF or Excel workbook.',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -17,7 +17,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'light dark',
+  colorScheme: 'light',
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: 'white' },
     { media: '(prefers-color-scheme: dark)', color: 'black' },

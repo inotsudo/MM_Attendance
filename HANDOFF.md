@@ -1,4 +1,4 @@
-# MM&RJD Attendance Frontend Handoff
+# Attendance Sheet Builder Handoff
 
 ## 1. Project structure
 

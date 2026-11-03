@@ -25,7 +25,7 @@ function formatSize(bytes: number) {
 
 export async function createImportHistoryWorkbook(rows: ImportHistoryExportRow[], generatedAt = new Date()) {
   const workbook = new ExcelJS.Workbook()
-  workbook.creator = 'MM&RJD Attendance'
+  workbook.creator = 'Attendance Sheet Builder'
   workbook.title = 'Attendance Import History'
   workbook.subject = 'Original attendance source file import log'
   workbook.created = generatedAt
@@ -33,7 +33,7 @@ export async function createImportHistoryWorkbook(rows: ImportHistoryExportRow[]
   const sheet = workbook.addWorksheet('Import History', { views: [{ state: 'frozen', ySplit: 6, xSplit: 2 }] })
   const lastColumn = 8
   sheet.mergeCells(1, 1, 1, lastColumn)
-  sheet.getCell('A1').value = 'MM&RJD | Attendance Import History'
+  sheet.getCell('A1').value = 'Attendance Import History'
   sheet.getCell('A1').font = { name: 'Aptos Display', size: 18, bold: true, color: { argb: 'FFFFFF' } }
   sheet.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
   sheet.getCell('A1').alignment = { vertical: 'middle' }
@@ -91,6 +91,6 @@ export async function createImportHistoryWorkbook(rows: ImportHistoryExportRow[]
     fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:5',
     margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
   }
-  sheet.headerFooter.oddFooter = '&LMM&RJD&CConfidential attendance information&RPage &P of &N'
+  sheet.headerFooter.oddFooter = '&LConfidential attendance information&RPage &P of &N'
   return workbook.xlsx.writeBuffer()
 }

@@ -153,7 +153,7 @@ export type AttendanceReport = {
     title: string
     organization: string
     generatedAt: string
-    timezone: 'Africa/Kigali'
+    timezone: string
     periodStart: string
     periodEnd: string
     rosterBasis: string

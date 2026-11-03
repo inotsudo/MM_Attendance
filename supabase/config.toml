@@ -1,4 +1,4 @@
-project_id = "mmrjd-attendance"
+project_id = "attendance-sheet-builder"
 
 [api]
 enabled = true

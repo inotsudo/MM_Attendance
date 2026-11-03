@@ -1,7 +1,7 @@
 import 'server-only'
 
 import ExcelJS from 'exceljs'
-import { kigaliIso, normalizeEmployeeName, normalizeEmployeeNumber } from './time'
+import { normalizeEmployeeName, normalizeEmployeeNumber, zonedIso } from './time'
 import type { ExcelAttendanceRecord, ImportWarning, ParsedAttendanceImport } from './types'
 
 type CellPrimitive = string | number | boolean | null
@@ -94,7 +94,9 @@ function clockParts(value: ExcelJS.CellValue): { hour: number; minute: number; s
 function validWorkDate(value: DateParts | null, fallbackYear: number | null) {
   if (!value || value.ambiguous) return false
   const year = value.year ?? fallbackYear
-  return Boolean(year && kigaliIso(year, value.month, value.day, 0, 0))
+  if (!year || year < 1900 || year > 2200) return false
+  const date = new Date(Date.UTC(year, value.month - 1, value.day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === value.month - 1 && date.getUTCDate() === value.day
 }
 
 function label(value: ExcelJS.CellValue): string {
@@ -119,6 +121,7 @@ function makeRecord(args: {
   outValue: ExcelJS.CellValue
   resolvedDate: DateParts | null
   warnings: ImportWarning[]
+  timeZone: string
 }): ExcelAttendanceRecord {
   const employeeNumber = textValue(args.idValue)
   const employeeName = sourceNameValue(args.nameValue)
@@ -130,8 +133,8 @@ function makeRecord(args: {
   const workDate = normalizedDate?.year ? `${normalizedDate.year}-${String(normalizedDate.month).padStart(2, '0')}-${String(normalizedDate.day).padStart(2, '0')}` : null
   const inClock = clockParts(args.inValue)
   const outClock = clockParts(args.outValue)
-  const normalizedInAt = workDate && inClock ? kigaliIso(normalizedDate!.year!, normalizedDate!.month, normalizedDate!.day, inClock.hour, inClock.minute, inClock.second) : null
-  const normalizedOutAt = workDate && outClock ? kigaliIso(normalizedDate!.year!, normalizedDate!.month, normalizedDate!.day, outClock.hour, outClock.minute, outClock.second) : null
+  const normalizedInAt = workDate && inClock ? zonedIso(normalizedDate!.year!, normalizedDate!.month, normalizedDate!.day, inClock.hour, inClock.minute, inClock.second, args.timeZone) : null
+  const normalizedOutAt = workDate && outClock ? zonedIso(normalizedDate!.year!, normalizedDate!.month, normalizedDate!.day, outClock.hour, outClock.minute, outClock.second, args.timeZone) : null
   const recordWarnings = [...args.warnings]
   if (!employeeNumber) recordWarnings.push({ code: 'missing_employee_id', severity: 'warning', message: 'Employee ID is blank; this entry needs explicit identity review.', sourceIndex: args.sourceIndex, sheet: args.sheet, row: args.row })
   if (!employeeName) recordWarnings.push({ code: 'missing_employee_name', severity: 'warning', message: 'Employee name is blank.', sourceIndex: args.sourceIndex, sheet: args.sheet, row: args.row })
@@ -191,7 +194,7 @@ function metadata(sheet: ExcelJS.Worksheet) {
   return { year, month }
 }
 
-export async function parseOrganizedExcel(bytes: Uint8Array): Promise<ParsedAttendanceImport> {
+export async function parseOrganizedExcel(bytes: Uint8Array, timeZone = 'Africa/Kigali'): Promise<ParsedAttendanceImport> {
   const workbook = new ExcelJS.Workbook()
   try {
     await workbook.xlsx.load(Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
@@ -329,6 +332,7 @@ export async function parseOrganizedExcel(bytes: Uint8Array): Promise<ParsedAtte
           outValue: day.outColumn ? row.getCell(day.outColumn).value : null,
           resolvedDate: resolvedDate.year ? resolvedDate : null,
           warnings: rowWarnings,
+          timeZone,
         }))
       }
     }

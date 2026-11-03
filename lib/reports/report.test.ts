@@ -140,12 +140,12 @@ describe('attendance report dataset and actual exports', () => {
   it('creates the manual attendance grid and inspects the generated PDF contents', async () => {
     const report = buildAttendanceReport(reportInput)
     const workbookBytes = await createAttendanceWorkbook(report)
-    await writeFile('/tmp/mmrjd-weekly-report-fixture.xlsx', Buffer.from(workbookBytes))
+    await writeFile('/tmp/attendance-weekly-report-fixture.xlsx', Buffer.from(workbookBytes))
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(Buffer.from(workbookBytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Attendance Sheet'])
     const attendance = workbook.getWorksheet('Attendance Sheet')!
-    expect(attendance.getCell('A1').text).toBe('MM&RJD  |  Weekly Employee Attendance Sheet')
+    expect(attendance.getCell('A1').text).toBe('Weekly Employee Attendance Sheet')
     expect(attendance.getCell('A3').text).toContain('Reporting period: 2026-10-26 to 2026-11-01')
     expect(attendance.getCell('A4').text).toBe('Employees Names')
     expect(attendance.getCell('D2').text).toBe('October–November')
@@ -178,7 +178,7 @@ describe('attendance report dataset and actual exports', () => {
     expect(attendance.pageSetup.printArea).toMatch(/^A1:/)
 
     const pdfBytes = createAttendancePdf(report)
-    const pdfPath = '/tmp/mmrjd-weekly-report-fixture.pdf'
+    const pdfPath = '/tmp/attendance-weekly-report-fixture.pdf'
     await mkdir('/tmp', { recursive: true })
     await writeFile(pdfPath, pdfBytes)
     const pdf = await getDocument({ data: new Uint8Array(pdfBytes) }).promise
@@ -190,7 +190,7 @@ describe('attendance report dataset and actual exports', () => {
       text.push(content.items.map((item) => 'str' in item ? item.str : '').join(' '))
     }
     const extracted = text.join('\n')
-    expect(extracted).toContain('MM&RJD')
+    expect(extracted).toContain('Weekly Employee Attendance Report')
     expect(extracted).toContain('2026-10-26 to 2026-11-01')
     expect(extracted).toContain('Alice Example')
     expect(extracted).toContain('Mon 26 Oct')

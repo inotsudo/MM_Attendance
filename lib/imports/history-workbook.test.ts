@@ -22,7 +22,7 @@ describe('Excel import history export', () => {
     await workbook.xlsx.load(Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Import History'])
     const sheet = workbook.getWorksheet('Import History')!
-    expect(sheet.getCell('A1').text).toContain('MM&RJD | Attendance Import History')
+    expect(sheet.getCell('A1').text).toContain('Attendance Import History')
     expect(sheet.getCell('A3').text).toContain('1 original file')
     expect(sheet.getCell('A5').text).toBe('Import ID')
     expect(sheet.getCell('A6').text).toBe('import-test-1')

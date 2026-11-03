@@ -59,7 +59,7 @@ export async function GET(request: Request) {
       return new Response(bytes, {
         headers: {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'Content-Disposition': `attachment; filename="MMRJD-weekly-attendance-${period}.xlsx"`,
+          'Content-Disposition': `attachment; filename="weekly-attendance-${period}.xlsx"`,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
           'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),
@@ -74,7 +74,7 @@ export async function GET(request: Request) {
     return new Response(new Uint8Array(bytes), {
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="MMRJD-weekly-attendance-${period}.pdf"`,
+        'Content-Disposition': `attachment; filename="weekly-attendance-${period}.pdf"`,
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
         'X-Report-Source-Records': String(report.diagnostics.sourceRecordsFound),

@@ -1,19 +1,23 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, CheckCircle2, ChevronDown, CircleHelp, FileBarChart, FileCheck2, FileSpreadsheet, FileText, Fingerprint, LayoutDashboard, Menu, Search, Settings, SlidersHorizontal, Upload, Users, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, CheckCircle2, ChevronDown, CircleHelp, FileBarChart, FileCheck2, FileSpreadsheet, FileText, Fingerprint, LayoutDashboard, Menu, Settings, SlidersHorizontal, Upload, Users, X } from 'lucide-react'
 import { DEFAULT_ATTENDANCE_RULES, processAttendanceEvents } from '@/lib/attendance-engine'
 import type { EmployeeOption, IdentityMatch, ImportWarning, PdfAttendanceRecord, ExcelAttendanceRecord } from '@/lib/imports/types'
 import { IntelligentReview } from './intelligent-review'
+import { AttendanceRecordsPage, DashboardPage } from './daily-operations'
 
 const navItems = [
-  { label: 'Dashboard', icon: LayoutDashboard },
-  { label: 'Employees', icon: Users },
-  { label: 'Import attendance', icon: Upload },
-  { label: 'Attendance records', icon: CalendarDays },
-  { label: 'Review & corrections', icon: CircleHelp },
-  { label: 'Reports', icon: FileBarChart },
+  { label: 'Home', page: 'Dashboard', icon: LayoutDashboard },
+  { label: 'Attendance', page: 'Import attendance', icon: CalendarDays },
 ]
+
+const attendanceViews = [
+  { label: 'Import files', page: 'Import attendance', icon: Upload },
+  { label: 'Daily records', page: 'Attendance records', icon: CalendarDays },
+  { label: 'Review', page: 'Review & corrections', icon: CircleHelp },
+  { label: 'HR report', page: 'Reports', icon: FileBarChart },
+] as const
 
 type ImportState = 'idle' | 'selected' | 'uploading' | 'previewing' | 'previewed' | 'confirming' | 'completed' | 'failed'
 type ImportSummary = { fileName: string; format: string; message: string }
@@ -110,13 +114,20 @@ export function AttendanceApp() {
   const [matchSelections, setMatchSelections] = useState<Record<string, string | null>>({})
   const [importError, setImportError] = useState<string | null>(null)
   const [activeImportId, setActiveImportId] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [employeeDraft, setEmployeeDraft] = useState({ id: '', name: '', department: '' })
-  const [employeeDraftSaved, setEmployeeDraftSaved] = useState(false)
-  const reportExportAction = useRef<(() => void) | null>(null)
 
-  const title = active === 'Dashboard' ? 'Dashboard' : active
-  const subtitle = active === 'Dashboard' ? 'Your attendance operations at a glance.' : `Manage ${active.toLowerCase()} across MM&RJD.`
+  const attendancePages = attendanceViews.map((view) => view.page as string)
+  const isAttendance = attendancePages.includes(active)
+  const activeAttendanceView = attendanceViews.find((view) => view.page === active)
+  const title = active === 'Dashboard' ? 'Home' : isAttendance ? 'Attendance' : active
+  const subtitles: Record<string, string> = {
+    Dashboard: 'A quick look at this week and what needs attention.',
+    'Import attendance': 'Import this week’s fingerprint report or prepared attendance sheet.',
+    'Attendance records': 'See saved daily attendance and source files.',
+    'Review & corrections': 'Resolve attendance questions before sending the report to HR.',
+    Reports: 'Prepare and download the weekly sheet for HR.',
+    Settings: 'Set working hours and weekend overtime rules.',
+  }
+  const subtitle = subtitles[active] ?? ''
 
   async function uploadFile(file: File) {
     let createdImportId: string | null = null
@@ -227,27 +238,26 @@ export function AttendanceApp() {
   }
 
   return <main className="app-shell">
-    <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}><div className="brand-lockup"><div className="brand-mark"><Fingerprint /></div><div><strong>MM&amp;RJD</strong><span>Attendance</span></div></div><nav aria-label="Primary navigation" className="primary-nav">{navItems.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${active === label ? 'active' : ''}`} onClick={() => { setActive(label); setMobileNav(false) }}><Icon className="nav-icon" /><span>{label}</span></button>)}</nav><div className="sidebar-bottom"><button className={`nav-item ${active === 'Settings' ? 'active' : ''}`} onClick={() => { setActive('Settings'); setMobileNav(false) }}><Settings className="nav-icon" /><span>Settings</span></button><div className="user-chip"><div className="avatar avatar-light">?</div><div><strong>Administrator</strong><span>MM&amp;RJD account</span></div><form action="/auth/signout" method="post" className="signout-form"><button type="submit" className="signout-button">Sign out</button></form></div></div></aside>
+    <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}><div className="brand-lockup"><div className="brand-mark"><Fingerprint /></div><div><strong>Attendance</strong><span>Weekly preparation</span></div></div><nav aria-label="Primary navigation" className="primary-nav">{navItems.map(({ label, page, icon: Icon }) => { const selected = page === 'Dashboard' ? active === 'Dashboard' : isAttendance; return <button key={label} className={`nav-item ${selected ? 'active' : ''}`} aria-current={selected ? 'page' : undefined} onClick={() => { setActive(page); setMobileNav(false) }}><Icon className="nav-icon" /><span>{label}</span></button> })}</nav><div className="sidebar-bottom"><button className={`nav-item ${active === 'Settings' ? 'active' : ''}`} aria-current={active === 'Settings' ? 'page' : undefined} onClick={() => { setActive('Settings'); setMobileNav(false) }}><Settings className="nav-icon" /><span>Settings</span></button><div className="user-chip"><div className="avatar avatar-light">A</div><div><strong>Administrator</strong><span>Attendance account</span></div><form action="/auth/signout" method="post" className="signout-form"><button type="submit" className="signout-button">Sign out</button></form></div></div></aside>
     {mobileNav && <button className="nav-scrim" aria-label="Close menu" onClick={() => setMobileNav(false)} />}
-    <section className="workspace"><header className="topbar"><button className="menu-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu /></button><div className="crumb"><span>MM&amp;RJD</span><span>/</span><strong>{title}</strong></div><div className="top-actions"><button className="icon-button" aria-label="Help"><CircleHelp /></button></div></header><div className="content"><div className="page-heading"><div><p className="eyebrow">Attendance operations</p><h1>{title}</h1><p className="subtitle">{subtitle}</p></div><div className="heading-actions">{active === 'Import attendance' ? <button type="button" className="button secondary" onClick={() => setActive('Reports')} title="Choose a reporting week and download the attendance report as Excel or PDF"><FileBarChart /> Create attendance report</button> : active === 'Reports' ? <button type="button" className="button secondary" onClick={() => reportExportAction.current?.()}><ArrowDownToLine /> Export report</button> : <button type="button" className="button secondary" disabled title="Attendance report export is available from the Reports page."><ArrowDownToLine /> Export</button>}<button className="button primary" onClick={() => setActive('Import attendance')}><Upload /> Import attendance</button></div></div>
-      {active === 'Dashboard' && <DashboardView onImport={() => setActive('Import attendance')} />}
+    <section className="workspace"><header className="topbar"><button className="menu-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu /></button><div className="crumb"><span>Attendance</span><span>/</span>{isAttendance && activeAttendanceView ? <><strong>Attendance</strong><span>/</span><strong>{activeAttendanceView.label}</strong></> : <strong>{title}</strong>}</div></header><div className="content"><div className="page-heading"><div><p className="eyebrow">Attendance preparation</p><h1>{title}</h1><p className="subtitle">{subtitle}</p></div><div className="heading-actions">{active === 'Import attendance' ? <button type="button" className="button secondary" onClick={() => setActive('Reports')} title="Prepare the weekly HR attendance report"><FileBarChart /> HR report</button> : null}</div></div>
+      {isAttendance && <nav className="attendance-tabs" aria-label="Attendance sections">{attendanceViews.map(({ label, page, icon: Icon }) => <button key={page} type="button" aria-current={active === page ? 'page' : undefined} className={`attendance-tab ${active === page ? 'active' : ''}`} onClick={() => setActive(page)}><Icon /><span>{label}</span></button>)}</nav>}
+      {active === 'Dashboard' && <DashboardPage onImport={() => setActive('Import attendance')} onNavigate={setActive} />}
       {active === 'Import attendance' && <ImportView importState={importState} selectedFile={selectedFile} summary={importSummary} preview={importPreview} selections={matchSelections} onSelection={(key, value) => setMatchSelections((current) => ({ ...current, [key]: value }))} onConfirm={confirmImport} error={importError} onFile={uploadFile} onResume={resumeImport} onReprocess={reprocessImport} onReset={() => { setSelectedFile(null); setImportSummary(null); setImportPreview(null); setMatchSelections({}); setImportError(null); setActiveImportId(null); setImportState('idle') }} />}
-      {active === 'Attendance records' && <RecordsView query={query} setQuery={setQuery} />}
+      {active === 'Attendance records' && <AttendanceRecordsPage />}
       {active === 'Review & corrections' && <ReviewView />}
-      {active === 'Reports' && <ReportsView exportAction={reportExportAction} />}
-      {active === 'Employees' && <EmployeeView draft={employeeDraft} setDraft={setEmployeeDraft} saved={employeeDraftSaved} onSave={() => setEmployeeDraftSaved(true)} />}
+      {active === 'Reports' && <ReportsView />}
       {active === 'Settings' && <SettingsView />}
     </div></section>
   </main>
 }
 
-function DashboardView({ onImport }: { onImport: () => void }) { return <><section className="overview-grid"><StatCard icon={<Users />} label="Employees matched" /><StatCard icon={<FileCheck2 />} label="Records imported" /><StatCard icon={<AlertTriangle />} label="Need review" /><StatCard icon={<FileBarChart />} label="Report status" value="Not generated" /></section><div className="dashboard-grid"><section className="panel upload-panel"><div className="panel-heading"><div><h2>Upload attendance file</h2><p>Import an iVMS-4200 export to get started.</p></div><Upload className="heading-icon" /></div><button className="empty-upload" onClick={onImport}><ArrowUpFromLine /><strong>No attendance files imported yet</strong><span>Choose an Excel or PDF export to begin.</span></button></section><section className="panel weekly-panel"><div className="panel-heading"><div><h2>Weekly overview</h2><p>Attendance status for the selected period.</p></div><CalendarDays className="heading-icon" /></div><EmptyState icon={FileBarChart} title="No attendance data" description="Import a file to see weekly summaries." /></section></div><section className="panel activity-panel"><div className="panel-heading"><div><h2>Recent attendance activity</h2><p>Processed records will appear here.</p></div></div><EmptyState icon={CalendarDays} title="No activity yet" description="There are no persisted attendance records." /></section></> }
-function StatCard({ icon, label, value = '—', caption = 'No data available' }: { icon: React.ReactNode; label: string; value?: string; caption?: string }) { return <article className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{caption}</small></article> }
-
 function kigaliClock(value: string | null) {
   if (!value) return ''
   return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Kigali', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value))
 }
+
+function StatCard({ icon, label, value = '—', caption = 'No data available' }: { icon: React.ReactNode; label: string; value?: string; caption?: string }) { return <article className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{caption}</small></article> }
 
 function correctionValueTimes(value: unknown): { firstRecordedAt: string | null; lastRecordedAt: string | null } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { firstRecordedAt: null, lastRecordedAt: null }
@@ -346,7 +356,7 @@ function ReviewView() {
     {error && <p role="alert" className="form-notice">{error}</p>}
     {notice && <p role="status" className="form-notice">{notice}</p>}
     <IntelligentReview />
-    <details className="review-secondary"><summary>Import validation notes</summary>
+    <details className="review-secondary"><summary>Attendance questions</summary>
     <div className="filters"><label className="field-label">Show<select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setItems([]); }}><option value="active">Open items</option><option value="pending">Needs review</option><option value="under_review">In progress</option><option value="unresolved">Unresolved</option><option value="confirmed">Confirmed</option><option value="corrected">Corrected</option><option value="rejected">Rejected</option><option value="all">All items</option></select></label></div>
     {queueLoading && items.length === 0 ? <p className="subtitle">Loading persisted review items…</p> : items.length === 0 ? <EmptyState icon={CircleHelp} title="No records require review" description="There are no open persisted attendance review items." /> : <div className="review-list">{items.map((item) => {
       const draft = drafts[item.id] ?? { note: '', employeeId: '', reviewState: 'under_review' }
@@ -369,8 +379,8 @@ function ReviewView() {
     {itemsPage.hasMore && <button className="button secondary" disabled={queueLoading} onClick={() => void refreshItems(items.length, true)}>{queueLoading ? 'Loading review items…' : 'Load more review items'}</button>}
     </details>
     <details className="review-secondary">
-      <summary>Correction history</summary>
-      <div className="panel-heading"><div><h2>Correction history</h2><p>Actions are loaded in pages so the full audit history remains available.</p></div></div>
+      <summary>Past corrections</summary>
+      <div className="panel-heading"><div><h2>Past corrections</h2><p>Previous decisions stay recorded for HR reference.</p></div></div>
       {!historyLoaded ? <button className="button secondary" disabled={historyLoading} onClick={() => void refreshHistory()}>{historyLoading ? 'Loading history…' : 'Load correction history'}</button> : historyLoading && corrections.length === 0 ? <p className="subtitle">Loading correction history…</p> : corrections.length === 0 ? <p className="subtitle">No attendance corrections have been recorded.</p> : <div className="review-list">{corrections.map((correction) => {
         const before = correctionValueTimes(correction.previous_values)
         const after = correctionValueTimes(correction.corrected_values)
@@ -482,9 +492,7 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
-function RecordsView({ query, setQuery }: { query: string; setQuery: (value: string) => void }) { const normalizedQuery = useMemo(() => query.trim().toLowerCase(), [query]); return <section className="panel records-page"><div className="filters"><div className="search-field"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search persisted employees or IDs" /></div><button className="filter-button"><SlidersHorizontal /> Filters <ChevronDown /></button><button className="button secondary"><CalendarDays /> This week</button></div><div className="table-meta"><span>{normalizedQuery ? '0 matching persisted records' : '0 persisted records'}</span></div><EmptyState icon={CalendarDays} title="No attendance records available" description="Import and process an attendance file to populate this register." /></section> }
-function EmployeeView({ draft, setDraft, saved, onSave }: { draft: { id: string; name: string; department: string }; setDraft: (draft: { id: string; name: string; department: string }) => void; saved: boolean; onSave: () => void }) { const valid = draft.id.trim() && draft.name.trim() && draft.department.trim(); return <section className="form-grid"><section className="panel form-card"><div className="panel-heading"><div><h2>Register employee</h2><p>Create a draft employee record for backend persistence later.</p></div><Users className="heading-icon" /></div><label className="field-label">Employee ID<input value={draft.id} onChange={(event) => setDraft({ ...draft, id: event.target.value })} placeholder="e.g. EMP-001" /></label><label className="field-label">Full name<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Employee name" /></label><label className="field-label">Department<input value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} placeholder="Department" /></label><button className="button primary" disabled={!valid} onClick={onSave}>Save employee draft</button>{saved && <p className="form-notice">Draft captured locally only. No database is connected, so it has not been saved.</p>}</section><section className="panel"><EmptyState icon={Users} title="No persisted employees" description="Registered employees will appear here after the backend is connected." /></section></section> }
-function ReportsView({ exportAction }: { exportAction: { current: (() => void) | null } }) {
+function ReportsView() {
   const initialWeek = useMemo(() => currentKigaliWeek(), [])
   const [weekStart, setWeekStart] = useState(initialWeek.from)
   const [importId, setImportId] = useState('')
@@ -528,7 +536,7 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
         : contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') && signature[0] === 0x50 && signature[1] === 0x4b
       if (!isValidFile) throw new Error(`The server response was not a valid ${format === 'pdf' ? 'PDF' : 'Excel workbook'}. No file was downloaded; retry or contact support if this persists.`)
       const url = URL.createObjectURL(blob)
-      const filename = `MMRJD-weekly-attendance-${weekStart}-to-${weekEnd}.${format}`
+      const filename = `weekly-attendance-${weekStart}-to-${weekEnd}.${format}`
       const sourceRecords = Number(response.headers.get('X-Report-Source-Records') ?? '0')
       const employees = Number(response.headers.get('X-Report-Employees') ?? '0')
       const calculatedDays = Number(response.headers.get('X-Report-Calculated-Days') ?? '0')
@@ -553,11 +561,6 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
     }
   }
 
-  useEffect(() => {
-    exportAction.current = () => { void generate() }
-    return () => { exportAction.current = null }
-  }, [weekStart, format, importId])
-
   return <section className="reports-grid">
     <section className="panel report-builder">
       <div className="panel-heading"><div><h2>Prepare weekly report</h2><p>Generate from confirmed attendance evidence and current persisted calculations.</p></div><FileBarChart className="heading-icon" /></div>
@@ -571,7 +574,7 @@ function ReportsView({ exportAction }: { exportAction: { current: (() => void) |
       <button className="button primary" onClick={generate} disabled={!validWeek || !importId || generating}>{generating ? 'Generating report…' : <><FileText /> Download {format === 'pdf' ? 'PDF' : 'Excel'} report</>}</button>
       {error && <p role="alert" className="form-notice">{error}</p>}
       {download && <p role="status" className="form-notice">Report generated: {download.message} <a href={download.url} download={download.filename}>Download again: {download.filename}</a> · {new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Kigali' }).format(new Date(download.generatedAt))} (Africa/Kigali)</p>}
-      <p className="subtitle">Days without imported records are not classified as absences. Fingerprint events remain direction-unknown. Stale calculations are shown as requiring review.</p>
+      <p className="subtitle">Before 12:00 is IN; after 12:00 is OUT. On workdays, missing IN or OUT cells are red and counted in No. absent. Weekends are rest days. Overtime starts at 19:30 and weekend overtime follows the saved rule.</p>
     </section>
     <section className="panel"><div className="panel-heading"><div><h2>Report contents</h2><p>Both formats use the same persisted report dataset and include provenance.</p></div><FileCheck2 className="heading-icon" /></div>
       <ul><li>Weekly employee attendance and supported totals</li><li>Review exceptions and source fingerprint evidence</li><li>Report period, generation ID, timezone, rule version and source import references</li></ul>
@@ -713,11 +716,11 @@ function SettingsView() {
 
   return <section className="settings-grid">
     <section className="panel settings-card">
-      <div className="panel-heading"><div><h2>Attendance rules</h2><p>Each save creates an auditable rule version used by future processing.</p></div><SlidersHorizontal className="heading-icon" /></div>
+      <div className="panel-heading"><div><h2>Working hours</h2><p>Set when staff are expected to arrive and leave, and when overtime can count.</p></div><SlidersHorizontal className="heading-icon" /></div>
       {loading && <p className="form-notice">Loading saved attendance rules…</p>}
       {error && <p role="alert" className="form-notice">{error}</p>}
-      {!loading && !activeRule && !error && <p className="form-notice">No attendance rule version is effective today. These values are defaults for the form only. Save a version before expecting imports to create calculated attendance.</p>}
-      {activeRule && <p className="form-notice">Active rule version {activeRule.version}, effective {activeRule.effective_from}. Updates are appended as new versions.</p>}
+      {!loading && !activeRule && !error && <p className="form-notice">No saved working hours are active today. Save the company schedule before processing attendance.</p>}
+      {activeRule && <p className="form-notice">Current schedule · effective {activeRule.effective_from}. Earlier schedules are kept for reference.</p>}
       <form className="settings-card" onSubmit={saveRules}>
         {([
           ['normalStart', 'Normal working start'],
@@ -727,14 +730,14 @@ function SettingsView() {
           ['overtimeFrom', 'Overtime threshold'],
         ] as const).map(([key, label]) => <label className="field-label" key={key}>{label}<input type="time" step={60} required value={form[key]} onChange={(event) => changeTime(key, event.target.value)} /></label>)}
         <label className="field-label">Effective from<input type="date" required value={form.effectiveFrom} onChange={(event) => setForm((current) => ({ ...current, effectiveFrom: event.target.value }))} /></label>
-        <label className="field-label">Reason for this rule version<input required minLength={5} maxLength={500} value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder="For example: HR approved the revised weekly attendance policy" /></label>
+        <label className="field-label">Why are you changing the schedule?<input required minLength={5} maxLength={500} value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder="For example: HR approved new working hours" /></label>
         <label className="field-label">Weekend overtime policy<select value={form.weekendMode} onChange={(event) => setForm((current) => ({ ...current, weekendMode: event.target.value, weekendDays: event.target.value === 'configured' ? current.weekendDays : [] }))}><option value="unconfigured">Not configured (requires review)</option><option value="none">No weekend overtime</option><option value="configured">Overtime applies on selected days</option></select></label>
         {form.weekendMode === 'configured' && <div className="report-options"><label><input type="checkbox" checked={form.weekendDays.includes('Saturday')} onChange={() => toggleWeekend('Saturday')} />Saturday</label><label><input type="checkbox" checked={form.weekendDays.includes('Sunday')} onChange={() => toggleWeekend('Sunday')} />Sunday</label></div>}
-        <button className="button primary" type="submit" disabled={loading || saving || !timesValid || form.reason.trim().length < 5 || (form.weekendMode === 'configured' && form.weekendDays.length === 0)}>{saving ? 'Saving rule version…' : 'Save new rule version'}</button>
+        <button className="button primary" type="submit" disabled={loading || saving || !timesValid || form.reason.trim().length < 5 || (form.weekendMode === 'configured' && form.weekendDays.length === 0)}>{saving ? 'Saving schedule…' : 'Save working hours'}</button>
       </form>
-      {notice && <p role="status" className="form-notice">{notice}</p>}
-      {pendingRules.length > 0 && <div><h3>Scheduled versions</h3>{pendingRules.map((rule) => <p className="subtitle" key={rule.id}>Version {rule.version} · effective {rule.effective_from} · {rule.reason}</p>)}</div>}
-      {rules.length > 0 && <div><h3>Recent rule history</h3>{rules.slice(0, 5).map((rule) => <p className="subtitle" key={rule.id}>Version {rule.version} · {rule.effective_from} · {rule.normal_start.slice(0, 5)} / {rule.grace_until.slice(0, 5)} / {rule.very_late_from.slice(0, 5)} / {rule.scheduled_end.slice(0, 5)} / {rule.overtime_from.slice(0, 5)} · {rule.reason}</p>)}</div>}
+      {notice && <p role="status" className="form-notice">{notice.replace(/^Rule version (\d+) saved/, 'Schedule $1 saved').replace('It takes effect', 'It starts').replace('earlier versions remain in the audit history.', 'Earlier schedules are kept.')}</p>}
+      {pendingRules.length > 0 && <div><h3>Upcoming schedule changes</h3>{pendingRules.map((rule) => <p className="subtitle" key={rule.id}>Starts {rule.effective_from} · {rule.reason}</p>)}</div>}
+      {rules.length > 0 && <div><h3>Previous schedules</h3>{rules.slice(0, 5).map((rule) => <p className="subtitle" key={rule.id}>Schedule {rule.version} · from {rule.effective_from} · {rule.normal_start.slice(0, 5)} start · {rule.grace_until.slice(0, 5)} late · {rule.very_late_from.slice(0, 5)} very late · {rule.overtime_from.slice(0, 5)} overtime</p>)}</div>}
     </section>
     <section className="panel settings-card">
       <div className="panel-heading"><div><h2>Organization and access</h2><p>System settings currently defined for this workspace.</p></div><Settings className="heading-icon" /></div>
